@@ -12,11 +12,6 @@ import static com.ibm.streamsx.topology.internal.streaminganalytics.VcapServices
 import java.io.File;
 import java.io.IOException;
 import java.math.BigInteger;
-import java.nio.file.Files;
-import java.nio.file.Paths;
-import java.util.ArrayList;
-import java.util.List;
-import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
 import org.apache.http.impl.client.CloseableHttpClient;
@@ -26,20 +21,23 @@ import com.google.gson.JsonObject;
 import com.ibm.streamsx.topology.Topology;
 import com.ibm.streamsx.topology.context.remote.RemoteContext;
 import com.ibm.streamsx.topology.internal.context.remote.DeployKeys;
-import com.ibm.streamsx.topology.internal.context.remote.RemoteContexts;
+import com.ibm.streamsx.topology.internal.gson.GsonUtilities;
 import com.ibm.streamsx.topology.internal.process.CompletedFuture;
 import com.ibm.streamsx.topology.internal.streaminganalytics.RestUtils;
 
 public class AnalyticsServiceStreamsContext extends
         BundleUserStreamsContext<BigInteger> {
 
-    public AnalyticsServiceStreamsContext() {
+    private final Type type;
+    
+    public AnalyticsServiceStreamsContext(Type type) {
         super(false);
+        this.type = type;
     }
 
     @Override
     public Type getType() {
-        return Type.ANALYTICS_SERVICE;
+        return type;
     }
     
     @Override
@@ -107,7 +105,8 @@ public class AnalyticsServiceStreamsContext extends
 
             JsonObject response = RestUtils.postJob(httpClient, service, bundle, jcojson);
             
-            submission.add(RemoteContext.SUBMISSION_RESULTS, response);
+            final JsonObject submissionResult = GsonUtilities.objectCreate(submission, RemoteContext.SUBMISSION_RESULTS);
+            GsonUtilities.addAll(submissionResult, response);
             
             String jobId = jstring(response, "jobId");
             

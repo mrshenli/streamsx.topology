@@ -14,7 +14,7 @@ operator.
     Operator names must be valid SPL identifers,
     SPL identifiers start with an ASCII letter or underscore,
     followed by ASCII letters, digits, or underscores.
-    The name also must not be a SPL keyword.
+    The name also must not be an SPL keyword.
 
 Once created the operators become part of a toolkit and may be used
 like any other SPL operator.
@@ -25,6 +25,10 @@ operator parameters.
 
 Python classes as SPL operators
 ===============================
+
+Overview
+--------
+
 Decorating a Python class creates a stateful SPL operator
 where the instance fields of the class are the operator's state. An instance
 of the class is created when the SPL operator invocation is initialized
@@ -44,7 +48,7 @@ are not supported.
     Parameter names must be valid SPL identifers,
     SPL identifiers start with an ASCII letter or underscore,
     followed by ASCII letters, digits, or underscores.
-    The name also must not be a SPL keyword.
+    The name also must not be an SPL keyword.
 
     Parameter names ``suppress`` and ``include`` are reserved.
 
@@ -89,6 +93,46 @@ or both operator parameters can be set::
         stop: 75;
     }
 
+Operator state
+--------------
+
+Use of a class allows the operator to be stateful by maintaining state in instance
+attributes across invocations (tuple processing).
+
+.. note::
+    For future compatibility instances of a class should ensure that the object's
+    state can be pickled. See https://docs.python.org/3.5/library/pickle.html#handling-stateful-objects
+
+Operator initialization & shutdown
+----------------------------------
+
+Execution of an instance for an operator effectively run in a context manager so that an instance's ``__enter__``
+method is called when the processing element containing the operator is initialized
+and its ``__exit__`` method called when the processing element is stopped. To take advantage of this
+the class must define both ``__enter__`` and ``__exit__`` methods.
+
+.. note::
+    For future compatibility operator initialization such as opening files should be in ``__enter__``
+    in order to support stateful operator restart & checkpointing in the future.
+
+Example of using ``__enter__`` and ``__exit__`` to open and close a file::
+
+    import streamsx.ec as ec
+
+    @spp.map()
+    class Sentiment(object):
+        def __init__(self, name):
+            self.name = name
+            self.file = None
+
+        def __enter__(self):
+            self.file = open(self.name, 'r')
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            if self.file is not None:
+                self.file.close()
+
+
 Python functions as SPL operators
 =================================
 Decorating a Python function creates a stateless SPL operator.
@@ -96,7 +140,7 @@ In SPL terms this is similar to an SPL Custom operator, where
 the code in the Python function is the custom code. For
 operators with input ports the function is called for each
 input tuple, passing a Python representation of the SPL input tuple.
-For a SPL source operator the function is called to obtain an iterable
+For an SPL source operator the function is called to obtain an iterable
 whose contents will be submitted to the output stream as SPL tuples.
 
 Operator parameters are not supported.
@@ -242,7 +286,7 @@ They do not support the ``style`` parameter.
 Examples
 ++++++++
 
-These examples how a SPL tuple with the schema and value::
+These examples show how an SPL tuple with the schema and value::
 
     tuple<rstring id, float64 temp, boolean increase>
     {id='battery', temp=23.7, increase=true}
@@ -342,7 +386,7 @@ call and the resulting values of the function's parameters.
 
 In all cases the SPL tuple must be able to provide all parameters
 required by the function. If the SPL schema is insufficient then
-an error will result, typically a SPL compile time error.
+an error will result, typically an SPL compile time error.
 
 The SPL schema can provide a subset of the formal parameters if the
 remaining attributes are optional (having a default).
@@ -450,7 +494,7 @@ When a returned tuple has more values than attributes in the SPL output schema t
 
 Python dictionary
 +++++++++++++++++
-A Python dictionary is converted to a SPL tuple for submission to
+A Python dictionary is converted to an SPL tuple for submission to
 the associated output port. An SPL attribute is set from the
 dictionary if the dictionary contains a key equal to the attribute
 name. The value is used to set the attribute, unless the attribute is
@@ -464,7 +508,7 @@ Any keys in the dictionary that do not map to SPL attribute names are ignored.
     
 Python list
 +++++++++++
-When a list returned, each value is converted to an SPL tuple and
+When a list is returned, each value is converted to an SPL tuple and
 submitted to the output port, in order of the list starting with the
 first element (position 0). If the list contains `None` at an index
 then no SPL tuple is submitted for that index.
@@ -514,7 +558,7 @@ def _valid_op_parameter(name):
 
 def pipe(wrapped):
     """
-    Decorator to create a SPL operator from a function.
+    Decorator to create an SPL operator from a function.
     
     A pipe SPL operator with a single input port and a single
     output port. For each tuple on the input port the
@@ -522,10 +566,9 @@ def pipe(wrapped):
 
     SPL attributes from the tuple are passed by position.
     
-    The value returned from the function defines what is
-    submitted to the output port. If None is returned then
-    nothing is submitted. If a tuple is returned then it
-    is c
+    The value returned from the function results in
+    zero or more tuples being submitted to the operator output
+    port, see :ref:`submit-from-python`.
     """
     if not inspect.isfunction(wrapped):
         raise TypeError('A function is required')
@@ -550,7 +593,7 @@ def _wrapforsplop(optype, wrapped, style, docpy):
             @functools.wraps(wrapped.__init__)
             def __init__(self,*args,**kwargs):
                 self.__splpy_instance = wrapped(*args,**kwargs)
-                if ec._supported:
+                if ec._is_supported():
                     ec._save_opc(self.__splpy_instance)
                 ec._callable_enter(self.__splpy_instance)
 
@@ -679,7 +722,7 @@ class source:
     where ``value`` is the return of the function.
 
     For each value in the iteration SPL zero or more tuples
-    are submitted to the output port, dervied from the value,
+    are submitted to the output port, derived from the value,
     see :ref:`submit-from-python`.
     
     If the iteration completes then no more tuples

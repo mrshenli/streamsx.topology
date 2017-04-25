@@ -2,6 +2,7 @@
 # Licensed Materials - Property of IBM
 # Copyright IBM Corp. 2016
 import os
+import sys
 import pickle
 from past.builtins import basestring
 
@@ -9,18 +10,27 @@ import streamsx.ec as ec
 
 try:
     import dill
+    # Importing cloudpickle break dill's deserialization.
+    # Workaround is to make dill aware of the ClassType type.
+    if sys.version_info.major == 3:
+        dill.dill._reverse_typemap['ClassType'] = type
     dill.settings['recurse'] = True
 except ImportError:
     dill = pickle
 
 import base64
-import sys
 import json
+from pkgutil import extend_path
+import streamsx
 
 def __splpy_addDirToPath(dir):
     if os.path.isdir(dir):
         if dir not in sys.path:
             sys.path.insert(0, dir)
+            # In case a streamsx module (e.g. streamsx.bm) 
+            # is included in the additional code
+            if os.path.isdir(os.path.join(dir, 'streamsx')):
+                streamsx.__path__ = extend_path(streamsx.__path__, streamsx.__name__)
                 
 def setupOperator(dir):
     pydir = os.path.join(dir, 'opt', 'python')
@@ -57,7 +67,7 @@ class _FunctionalCallable(object):
             is_cls = is_cls and (not inspect.isclass(self._callable))
             
             if is_cls:
-                if ec._supported:
+                if ec._is_supported():
                     self._callable._streamsx_ec_op = ec._get_opc(self._callable)
                 self._cls = True
                 ec._callable_enter(self._callable)
@@ -267,7 +277,7 @@ class _PickleIterator:
 # None, otherwise it returns
 # an instance of _PickleIterator
 # wrapping an iterator from the iterable
-# Used by PyFunctionMultiTransform
+# Used by FlatMap
 
 class _ObjectInPickleIter(_FunctionalCallable):
     def __call__(self, tuple):

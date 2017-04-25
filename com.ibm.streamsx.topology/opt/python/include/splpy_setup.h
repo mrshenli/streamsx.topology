@@ -21,6 +21,7 @@
 #define __SPL__SPLPY_SETUP_H
 
 #include "Python.h"
+#include <stdlib.h>
 #include <string>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -82,6 +83,7 @@ class SplpySetup {
         startPython(pydl);
         setupNone(pydl);
         runSplSetup(pydl, spl_setup_py_path);
+        setupClasses();
         return pydl;
     }
 
@@ -91,6 +93,8 @@ class SplpySetup {
      */
     static void setupNone(void * pydl) {
         typedef PyObject * (*__splpy_bv)(const char *, ...);
+
+        SplpyGIL lock;
 
         // empty format returns None
         PyObject * none =
@@ -105,6 +109,14 @@ class SplpySetup {
                         "Internal error - None handling");
         }
     }
+
+   static void setupClasses() {
+       SplpyGIL lock;
+       SplpyGeneral::timestampClass(
+          SplpyGeneral::loadFunction("streamsx.spl.types", "Timestamp"));
+       SplpyGeneral::timestampGetter(
+          SplpyGeneral::loadFunction("streamsx.spl.types", "_get_timestamp_tuple"));
+   }
 
   private:
     static void * loadPythonLib() {
@@ -136,6 +148,19 @@ class SplpySetup {
           throw exc;
         }
         SPLAPPLOG(L_INFO, TOPOLOGY_LOAD_LIB(pyLib), "python");
+ 
+#if PY_MAJOR_VERSION == 3
+        // When SPL compile is optimized disable Python
+        // assertions, equivalent to -OO
+        // Seems to cause module loading issues from pyc files
+        // on Python 2.7 so only optmize on Python 3
+        if (SPL::ProcessingElement::pe().isOptimized()) {
+           if (getenv("PYTHONOPTIMIZE") == NULL) {
+               SPLAPPTRC(L_DEBUG, "Setting optimized Python runtime (-OO)", "python");
+               setenv("PYTHONOPTIMIZE", "2", 1);
+          }
+        }
+#endif
 
         void * pydl = dlopen(pyLib.c_str(),
                          RTLD_LAZY | RTLD_GLOBAL | RTLD_DEEPBIND);
@@ -169,9 +194,13 @@ class SplpySetup {
         __splpy_ii _SPLPy_IsInitialized =
              (__splpy_ii) dlsym(pydl, "Py_IsInitialized");
 
-
         if (_SPLPy_IsInitialized() == 0) {
           typedef void (*__splpy_ie)(int);
+#if PY_MAJOR_VERSION == 3
+          typedef void (*__splpy_ssae)(int, wchar_t**, int);
+#else
+          typedef void (*__splpy_ssae)(int, char**, int);
+#endif
           typedef void (*__splpy_eit)(void);
           typedef PyThreadState * (*__splpy_est)(void);
 
@@ -190,8 +219,12 @@ class SplpySetup {
 
           SPLAPPTRC(L_DEBUG, "Starting Python runtime", "python");
 
+           
           __splpy_ie _SPLPy_InitializeEx =
              (__splpy_ie) dlsym(pydl, "Py_InitializeEx");
+
+          __splpy_ssae _SPLPySys_SetArgvEx =
+             (__splpy_ssae) dlsym(pydl, "PySys_SetArgvEx");
 
           __splpy_eit _SPLPyEval_InitThreads =
              (__splpy_eit) dlsym(pydl, "PyEval_InitThreads");
@@ -200,6 +233,14 @@ class SplpySetup {
              (__splpy_est) dlsym(pydl, "PyEval_SaveThread");
 
           _SPLPy_InitializeEx(0);
+#if PY_MAJOR_VERSION == 3
+          const wchar_t *argv[] = {L""};
+          _SPLPySys_SetArgvEx(1, (wchar_t **) argv, 0);
+#else
+          const char *argv[] = {""};
+          _SPLPySys_SetArgvEx(1, (char **) argv, 0);
+#endif
+
           _SPLPyEval_InitThreads();
           _SPLPyEval_SaveThread();
 

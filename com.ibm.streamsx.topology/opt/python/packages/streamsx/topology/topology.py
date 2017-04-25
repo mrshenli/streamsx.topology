@@ -4,12 +4,12 @@
 
 """
 Python API to allow creation of streaming applications for
-IBM Streams & Streaming Analytics service on Bluemix.
+IBM® Streams & Streaming Analytics service on Bluemix.
 
 Overview
 ########
 
-IBM® Streams is an advanced analytic platform that allows user-developed
+IBM Streams is an advanced analytic platform that allows user-developed
 applications to quickly ingest, analyze and correlate information as it
 arrives from thousands of real-time sources.
 Streams can handle very high data throughput rates, millions of events
@@ -67,6 +67,9 @@ The schema for a Python Topology is either:
 Stream processing
 #################
 
+Callables
+=========
+
 A stream is processed to produce zero or more transformed streams,
 such as filtering a stream to drop unwanted tuples, producing a stream
 that only contains the required tuples.
@@ -91,17 +94,66 @@ processed by a :py:meth:`~Stream.filter` using a lambda function::
     # Filter the stream so it only contains words starting with py
     pywords = words.filter(lambda word : tuple.startswith('py'))
 
+Stateful operations
+===================
+
 Use of a class instance allows the operation to be stateful by maintaining state in instance
-attributes across invocations. For future compatibility instances should ensure that the object's
-state can be pickled.
+attributes across invocations.
+
+.. note::
+    For future compatibility instances should ensure that the object's
+    state can be pickled. See https://docs.python.org/3.5/library/pickle.html#handling-stateful-objects
+
+Initialization and shutdown
+===========================
 
 Execution of a class instance effectively run in a context manager so that an instance's ``__enter__``
 method is called when the processing element containing the instance  is initialized
 and its ``__exit__`` method called when the processing element is stopped. To take advantage of this
 the class must define both ``__enter__`` and ``__exit__`` methods.
 
-In addition an application declared by `Topology` can include stream processing defined by SPL operators. This allows
-reuse of adapters and analytics provided by IBM Streams, open source and third-party SPL toolkits.
+.. note::
+    Since an instance of a class is passed to methods such as
+    :py:meth:`~Stream.map` ``__init__`` is only called when the topology is `declared`, not at runtime.
+    Initialization at runtime, such as opening connections, occurs through the ``__enter__`` method.
+
+Example of using ``__enter__`` to create custom metrics::
+
+    import streamsx.ec as ec
+
+    class Sentiment(object):
+        def __init__(self):
+            pass
+
+        def __enter__(self):
+            self.positive_metric = ec.CustomMetric(self, "positiveSentiment")
+            self.negative_metric = ec.CustomMetric(self, "negativeSentiment")
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            pass
+
+Tuple semantics
+===============
+
+Python objects on a stream may be passed by reference between callables (e.g. the value returned by a map callable may be passed by reference to a following filter callable). This can only occur when the functions are executing in the same PE (process). If an object is not passed by reference a deep-copy is passed. Streams that cross PE (process) boundaries  are always passed by deep-copy.
+
+Thus if a stream is consumed by two map and one filter callables in the same PE they may receive the same object reference that was sent by the upstream callable. If one (or more) callable modifies the passed in reference those changes may be seen by the upstream callable or the other callables. The order of execution of the downstream callables is not defined. One can prevent such potential non-deterministic behavior by one or more of these techniques:
+
+* Passing immutable objects
+* Not retaining a reference to an object that will be submitted on a stream
+* Not modifying input tuples in a callable
+* Using copy/deepcopy when returning a value that will be submitted to a stream.
+
+Applications cannot rely on pass-by reference,  it is a performance optimization that can be made in some situations when stream connections are within a PE.
+
+SPL operators
+=============
+
+In addition an application declared by `Topology` can include stream processing defined by SPL primitive or
+composite operators. This allows reuse of adapters and analytics provided by IBM Streams,
+open source and third-party SPL toolkits.
+
+See :py:mod:`streamsx.spl.op`
 
 """
 
@@ -119,7 +171,7 @@ except (ImportError,NameError):
 
 import random
 from streamsx.topology import graph
-from streamsx.topology import schema
+from streamsx.topology.schema import StreamSchema, CommonSchema
 import streamsx.topology.functions
 import json
 import threading
@@ -300,18 +352,21 @@ class Topology(object):
             Stream: A stream whose tuples are the result of the iterable obtained from `func`.
         """
         if inspect.isroutine(func):
-             pass
+            pass
         elif callable(func):
-             pass
+            pass
         else:
-             func = streamsx.topology.functions._IterableInstance(func)
+            if name is None:
+                name = type(func).__name__
+            func = streamsx.topology.functions._IterableInstance(func)
         
         sl = _SourceLocation(_source_info(), "source")
-        op = self.graph.addOperator(self.opnamespace+"::PyFunctionSource", func, name=name, sl=sl)
-        oport = op.addOutputPort()
+        name = self.graph._requested_name(name, action='source', func=func)
+        op = self.graph.addOperator(self.opnamespace+"::Source", func, name=name, sl=sl)
+        oport = op.addOutputPort(name=name)
         return Stream(self, oport)
 
-    def subscribe(self, topic, schema=schema.CommonSchema.Python):
+    def subscribe(self, topic, schema=CommonSchema.Python):
         """
         Subscribe to a topic published by other Streams applications.
         A Streams application may publish a stream to allow other
@@ -357,11 +412,20 @@ class Stream(object):
         self.topology = topology
         self.oport = oport
 
+    @property
+    def name(self):
+        """Name of the stream.
+
+        Returns:
+            str: Name of the stream.
+        """
+        return self.oport.name
+
     def for_each(self, func, name=None):
         """
         Sends information as a stream to an external system.
 
-        For each tuple on the stream ``func(tuple)`` is called.
+        For each tuple `t` on the stream ``func(t)`` is called.
         
         Args:
             func: A callable that takes a single parameter for the tuple and returns None.
@@ -369,8 +433,9 @@ class Stream(object):
             None
         """
         sl = _SourceLocation(_source_info(), "for_each")
-        op = self.topology.graph.addOperator(self.topology.opnamespace+"::PyFunctionSink", func, name=name, sl=sl)
-        op.addInputPort(outputPort=self.oport)
+        name = self.topology.graph._requested_name(name, action="for_each", func=func)
+        op = self.topology.graph.addOperator(self.topology.opnamespace+"::ForEach", func, name=name, sl=sl)
+        op.addInputPort(outputPort=self.oport, name=self.name)
 
     def sink(self, func, name=None):
         """
@@ -391,33 +456,67 @@ class Stream(object):
             Stream: A Stream containing tuples that have not been filtered out.
         """
         sl = _SourceLocation(_source_info(), "filter")
-        op = self.topology.graph.addOperator(self.topology.opnamespace+"::PyFunctionFilter", func, name=name, sl=sl)
-        op.addInputPort(outputPort=self.oport)
-        oport = op.addOutputPort(schema=self.oport.schema)
+        name = self.topology.graph._requested_name(name, action="filter", func=func)
+        op = self.topology.graph.addOperator(self.topology.opnamespace+"::Filter", func, name=name, sl=sl)
+        op.addInputPort(outputPort=self.oport, name=self.name)
+        oport = op.addOutputPort(schema=self.oport.schema, name=name)
         return Stream(self.topology, oport)
 
     def _map(self, func, schema, name=None):
-        op = self.topology.graph.addOperator(self.topology.opnamespace+"::PyFunctionTransform", func, name=name)
-        op.addInputPort(outputPort=self.oport)
-        oport = op.addOutputPort(schema=schema)
+        name = self.topology.graph._requested_name(name, action="map", func=func)
+        op = self.topology.graph.addOperator(self.topology.opnamespace+"::Map", func, name=name)
+        op.addInputPort(outputPort=self.oport, name=self.name)
+        oport = op.addOutputPort(schema=schema, name=name)
         return Stream(self.topology, oport)
 
-    def view(self, buffer_time = 10.0, sample_size = 10000, name=None):
+    def view(self, buffer_time = 10.0, sample_size = 10000, name=None, description=None, start=False):
         """
-        Defines a view on a stream. Returns a view object which can be used to access the data
-        :param buffer_time The window of time over which tuples will be
-        :param name Name of the view. Name must be unique within the topology. Defaults to a generated name.
+        Defines a view on a stream.
+
+        A view is a continually updated sampled buffer of a streams's tuples.
+        Views allow visibility into a stream from external clients such
+        as the Streams console,
+        `Microsoft Excel <https://www.ibm.com/support/knowledgecenter/SSCRJU_4.2.0/com.ibm.streams.excel.doc/doc/excel_overview.html>`_ or REST clients.
+
+        The view created by this method can be used by external clients
+        and through the returned object after the topology is submitted. 
+
+        When the stream contains Python objects then they are converted
+        to JSON.
+
+        Args:
+            buffer_time: Specifies the buffer size to use measured in seconds.
+            sample_size: Specifies the number of tuples to sample per second.
+            name: Name of the view. Name must be unique within the topology. Defaults to a generated name.
+            description: Description of the view.
+            start(bool): Start buffering data when the job is submitted.
+                If `False` then the view is starts buffering data when the first
+                remote client accesses it to retrieve data.
+ 
+        Returns:
+            View object which can be used to access the data when the
+            topology is submitted.
         """
-        new_op = self._map(streamsx.topology.functions.identity,schema=schema.CommonSchema.Json)
         if name is None:
             name = ''.join(random.choice('0123456789abcdef') for x in range(16))
 
-        port = new_op.oport.name
-        new_op.oport.operator.addViewConfig({
+        if self.oport.schema == CommonSchema.Python:
+            view_stream = self._map(streamsx.topology.functions.identity,schema=CommonSchema.Json)
+            # colocate map operator with stream that is being viewed.
+            self.oport.operator.colocate(view_stream.oport.operator, 'view')
+        else:
+            view_stream = self
+
+        port = view_stream.oport.name
+        view_config = {
                 'name': name,
                 'port': port,
+                'description': description,
                 'bufferTime': buffer_time,
-                'sampleSize': sample_size})
+                'sampleSize': sample_size}
+        if start:
+            view_config['activateOption'] = 'automatic'
+        view_stream.oport.operator.addViewConfig(view_config)
         _view = View(name)
         self.topology.graph.get_views().append(_view)
         return _view
@@ -437,7 +536,7 @@ class Stream(object):
         Returns:
             Stream: A stream containing tuples mapped by `func`.
         """
-        return self._map(func, schema=schema.CommonSchema.Python, name=name)
+        return self._map(func, schema=CommonSchema.Python, name=name)
 
     def transform(self, func, name=None):
         """
@@ -466,9 +565,10 @@ class Stream(object):
             TypeError: if `func` does not return an iterator nor None
         """     
         sl = _SourceLocation(_source_info(), "flat_map")
-        op = self.topology.graph.addOperator(self.topology.opnamespace+"::PyFunctionMultiTransform", func, name=name, sl=sl)
-        op.addInputPort(outputPort=self.oport)
-        oport = op.addOutputPort()
+        name = self.topology.graph._requested_name(name, action='flat_map', func=func)
+        op = self.topology.graph.addOperator(self.topology.opnamespace+"::FlatMap", func, name=name, sl=sl)
+        op.addInputPort(outputPort=self.oport, name=self.name)
+        oport = op.addOutputPort(name=name)
         return Stream(self.topology, oport)
     
     def multi_transform(self, func, name=None):
@@ -552,29 +652,40 @@ class Stream(object):
             Stream: A stream for which subsequent transformations will be executed in parallel.
 
         """
-        if (routing == None or routing == Routing.ROUND_ROBIN) :
+        if routing == None or routing == Routing.ROUND_ROBIN:
             op2 = self.topology.graph.addOperator("$Parallel$")
             op2.addInputPort(outputPort=self.oport)
             oport = op2.addOutputPort(width)
             return Stream(self.topology, oport)
-        elif(routing == Routing.HASH_PARTITIONED ) :
-            if (func is None) :
-                func = hash   
-            hash_adder = self.topology.graph.addOperator(self.topology.opnamespace+"::PyFunctionHashAdder", func)
-            hash_schema = self.oport.schema.extend(schema.StreamSchema("tuple<int64 __spl_hash>"))
-            hash_adder.addInputPort(outputPort=self.oport)
-            hash_adder_oport = hash_adder.addOutputPort(schema=hash_schema)
+        elif routing == Routing.HASH_PARTITIONED:
 
+            if (func is None):
+                if self.oport.schema == CommonSchema.String:
+                    keys = ['string']
+                    parallel_input = self.oport
+                elif self.oport.schema == CommonSchema.Python:
+                    func = hash
+                else:
+                    raise NotImplementedError("HASH_PARTITIONED for schema {0} requires a hash function.".format(self.oport.schema))
+
+            if func is not None:
+                keys = ['__spl_hash']
+                hash_adder = self.topology.graph.addOperator(self.topology.opnamespace+"::HashAdder", func)
+                hash_schema = self.oport.schema.extend(StreamSchema("tuple<int64 __spl_hash>"))
+                hash_adder.addInputPort(outputPort=self.oport, name=self.name)
+                parallel_input = hash_adder.addOutputPort(schema=hash_schema)
 
             parallel_op = self.topology.graph.addOperator("$Parallel$")
-            parallel_op.addInputPort(outputPort=hash_adder_oport)
-            parallel_op_port = parallel_op.addOutputPort(oWidth=width, schema=hash_schema, partitioned=True)
+            parallel_op.addInputPort(outputPort=parallel_input)
+            parallel_op_port = parallel_op.addOutputPort(oWidth=width, schema=parallel_input.schema, partitioned_keys=keys)
 
-            # use the Functor passthru operator to effectively remove the hash attribute by removing it from output port schema 
-            hrop = self.topology.graph.addPassThruOperator()
-            hrop.addInputPort(outputPort=parallel_op_port)
-            hrOport = hrop.addOutputPort(schema=self.oport.schema)
-            return Stream(self.topology, hrOport)
+            if func is not None:
+                # use the Functor passthru operator to remove the hash attribute by removing it from output port schema
+                hrop = self.topology.graph.addPassThruOperator()
+                hrop.addInputPort(outputPort=parallel_op_port)
+                parallel_op_port = hrop.addOutputPort(schema=self.oport.schema)
+
+            return Stream(self.topology, parallel_op_port)
         else :
             raise TypeError("Invalid routing type supplied to the parallel operator")    
 
@@ -627,7 +738,7 @@ class Stream(object):
         """
         self.sink(streamsx.topology.functions.print_flush)
 
-    def publish(self, topic, schema=schema.CommonSchema.Python):
+    def publish(self, topic, schema=None):
         """
         Publish this stream on a topic for other Streams applications to subscribe to.
         A Streams application may publish a stream to allow other
@@ -654,14 +765,22 @@ class Stream(object):
         Returns:
             None
         """
-        if self.oport.schema.schema() != schema.schema():
-            self._map(streamsx.topology.functions.identity,schema=schema).publish(topic, schema=schema)
+        if schema is not None and self.oport.schema.schema() != schema.schema():
+            nc = None
+            if schema == CommonSchema.Json:
+                nc = self.name + "_JSON"
+            elif schema == CommonSchema.String:
+                nc = self.name + "_String"
+               
+            schema_change = self._map(streamsx.topology.functions.identity,schema=schema, name=nc)
+            self.oport.operator.colocate(schema_change.oport.operator, 'publish')
+            schema_change.publish(topic, schema=schema)
             return None
 
         sl = _SourceLocation(_source_info(), "publish")
-        publish_arams = {'topic': topic}
-        op = self.topology.graph.addOperator("com.ibm.streamsx.topology.topic::Publish", params=publish_arams, sl=sl)
-        op.addInputPort(outputPort=self.oport)
+        op = self.topology.graph.addOperator("com.ibm.streamsx.topology.topic::Publish", params={'topic': topic}, sl=sl)
+        op.addInputPort(outputPort=self.oport, name=self.name)
+        self.oport.operator.colocate(op, 'publish')
 
     def autonomous(self):
         """
@@ -687,7 +806,7 @@ class Stream(object):
         oport = op.addOutputPort(schema=self.oport.schema)
         return Stream(self.topology, oport)
 
-    def as_string(self):
+    def as_string(self, name=None):
         """
         Declares a stream converting each tuple on this stream
         into a string using `str(tuple)`.
@@ -700,7 +819,11 @@ class Stream(object):
             Stream: Stream containing the string representations of tuples on this stream.
 
         """
-        return self._map(streamsx.topology.functions.identity, schema.CommonSchema.String)
+        if name is None:
+            name = self.name + '_String'
+        string_stream = self._map(streamsx.topology.functions.identity, CommonSchema.String, name=name)
+        self.oport.operator.colocate(string_stream.oport.operator, 'as_string')
+        return string_stream
 
 class View(object):
     """
@@ -709,40 +832,87 @@ class View(object):
     def __init__(self, name):
         self.name = name
 
-        self.streams_context = None
-        self.view_object = None
-        self.streams_context_config = {'username': '', 'password': '', 'rest_api_url': ''}
-
-        self.is_rest_initialized = False
+        self._view_object = None
+        self._submit_context = None
+        self._streams_connection = None
 
     def initialize_rest(self):
-        if not self.is_rest_initialized:
-            if self.streams_context_config['username'] is None or \
-               self.streams_context_config['password'] is None or \
-               self.streams_context_config['rest_api_url'] is None:
-                raise ValueError(
-                    "WARNING: A username, a password, and a rest url must be present in order to access view data")
-            from streamsx import rest
-            rc = rest.StreamsConnection(self.streams_context_config['username'],
-                                     self.streams_context_config['password'],
-                                     self.streams_context_config['rest_api_url'])
-            self.is_rest_initialized = True
-            self.set_streams_context(rc)
+        if self._streams_connection is None:
+            if self._submit_context is None:
+                raise ValueError("View has not been created.")
+
+            self._streams_connection = self._submit_context.streams_connection()
 
     def stop_data_fetch(self):
-        self.view_object.stop_data_fetch()
+        self._view_object.stop_data_fetch()
 
     def start_data_fetch(self):
         self.initialize_rest()
-        try:
-            self.view_object = self.streams_context.get_view(self.name)
-        except:
-            logger.exception("Could not view: " + self.name)
-            raise
-        return self.view_object.start_data_fetch()
+        sc = self._streams_connection
+        instance = sc.get_instance(id=self._submit_context.submission_results['instanceId'])
+        job = instance.get_job(id=self._submit_context.submission_results['jobId'])
+        self._view_object = job.get_views(name=self.name)[0]
 
-    def set_streams_context_config(self, conf):
-        self.streams_context_config = conf
+        return self._view_object.start_data_fetch()
 
-    def set_streams_context(self, sc):
-        self.streams_context = sc
+
+class PendingStream(object):
+        """Pending stream connection.
+
+        A pending stream is an initially `disconnected` stream. The `stream` attribute
+        can be used as an input stream when the required stream is not yet available. Once the required
+        stream is available the connection is made using :py:meth:`complete`.
+
+        The schema of the pending stream is defined by the stream passed into `complete`.
+
+        A simple example is creating a source stream after the filter that will use it::
+
+            # Create the pending or placeholder stream
+            pending_source = PendingStream(topology)
+
+            # Create a filter against the placeholder stream
+            f = pending_source.stream.filter(lambda : t : t.startswith("H"))
+
+            source = topology.source(['Hello', 'World'])
+
+            # Now complete the connection
+            pending_source.complete(source)
+
+        Streams allows feedback loops in its flow graphs, where downstream processing can produce a stream that is
+        fed back into the input port of an upstream operator. Typically, feedback loops are
+        used to modify the state of upstream transformations, rather than repeat processing of tuples.
+
+        A feedback loop can be created by using a `PendingStream`. The upstream transformation or operator
+        that will end the feedback loop uses :py:attr:`~PendingStream.stream` as one of its inputs. A processing
+        pipeline is then created and once the downstream starting point of the feedback loop is available,
+        it is passed to :py:meth:`complete` to create the loop.
+
+        """
+        def __init__(self, topology):
+            self.topology = topology
+            self._marker = topology.graph.addOperator(kind="$Pending$")
+            self._pending_schema = StreamSchema('<pending')
+
+            self.stream = Stream(topology, self._marker.addOutputPort(schema=self._pending_schema))
+
+        def complete(self, stream):
+            """Complete the pending stream.
+
+            Any connections made to :py:attr:`stream` are connected to `stream` once
+            this method returns.
+
+            Args:
+                stream(Stream): Stream that completes the connection.
+            """
+            assert not self.is_complete()
+            self._marker.addInputPort(outputPort=stream.oport)
+            self.stream.oport.schema = stream.oport.schema
+            # Update the pending schema to the actual schema
+            # Any downstream filters that took the reference
+            # will be automatically updated to the correct schema
+            self._pending_schema._set(stream.oport.schema)
+
+        def is_complete(self):
+            """Has this connection been completed.
+            """
+            return self._marker.inputPorts

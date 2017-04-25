@@ -4,9 +4,14 @@
  */
 package com.ibm.streamsx.topology.internal.context.remote;
 
+import static com.ibm.streamsx.topology.internal.context.remote.DeployKeys.keepArtifacts;
+import static com.ibm.streamsx.topology.internal.graph.GraphKeys.CONFIG;
+import static com.ibm.streamsx.topology.internal.graph.GraphKeys.graph;
 import static com.ibm.streamsx.topology.internal.graph.GraphKeys.splAppName;
 import static com.ibm.streamsx.topology.internal.graph.GraphKeys.splAppNamespace;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jstring;
 import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.object;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.objectArray;
 
 import java.io.File;
 import java.io.FileOutputStream;
@@ -25,34 +30,48 @@ import java.util.concurrent.Future;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
+import org.apache.commons.compress.archivers.ArchiveEntry;
+import org.apache.commons.compress.archivers.zip.ZipArchiveEntry;
+import org.apache.commons.compress.archivers.zip.ZipArchiveOutputStream;
+
 import com.google.gson.JsonObject;
 import com.ibm.streamsx.topology.context.remote.RemoteContext;
+import com.ibm.streamsx.topology.internal.gson.GsonUtilities;
 import com.ibm.streamsx.topology.internal.process.CompletedFuture;
 
 public class ZippedToolkitRemoteContext extends ToolkitRemoteContext {
-    @Override
+    
+	private final boolean keepBuildArchive;
+
+	public ZippedToolkitRemoteContext() {
+        this.keepBuildArchive = false;
+    }
+	
+    public ZippedToolkitRemoteContext(boolean keepBuildArchive) {
+        this.keepBuildArchive = keepBuildArchive;
+    }
+	
+	@Override
     public Type getType() {
         return Type.BUILD_ARCHIVE;
     }
     
     @Override
     public Future<File> _submit(JsonObject submission) throws Exception {
-        File toolkitRoot = super._submit(submission).get();
-        return createCodeArchive(toolkitRoot, submission);        
+        final File toolkitRoot = super._submit(submission).get();
+        return createCodeArchive(toolkitRoot, submission);
     }
     
-    public static Future<File> createCodeArchive(File toolkitRoot, JsonObject submission) throws IOException, URISyntaxException {
+    public Future<File> createCodeArchive(File toolkitRoot, JsonObject submission) throws IOException, URISyntaxException {
         
-        JsonObject jsonGraph = object(submission, SUBMISSION_GRAPH);
-        String namespace = splAppNamespace(jsonGraph);
-        String name = splAppName(jsonGraph);
         String tkName = toolkitRoot.getName();
         
-        Path zipOutPath = pack(toolkitRoot.toPath(), namespace, name, tkName);
+        Path zipOutPath = pack(toolkitRoot.toPath(), graph(submission), tkName);
         
-        JsonObject results = new JsonObject();
-        results.addProperty(SubmissionResultsKeys.ARCHIVE_PATH, zipOutPath.toString());
-        submission.add(RemoteContext.SUBMISSION_RESULTS, results);
+        if (keepBuildArchive || keepArtifacts(submission)) {
+        	final JsonObject submissionResult = GsonUtilities.objectCreate(submission, RemoteContext.SUBMISSION_RESULTS);
+        	submissionResult.addProperty(SubmissionResultsKeys.ARCHIVE_PATH, zipOutPath.toString());
+        }
         
         JsonObject deployInfo = object(submission, SUBMISSION_DEPLOY);
         deleteToolkit(toolkitRoot, deployInfo);
@@ -60,16 +79,34 @@ public class ZippedToolkitRemoteContext extends ToolkitRemoteContext {
         return new CompletedFuture<File>(zipOutPath.toFile());
     }
         
-    private static Path pack(final Path folder, String namespace, String name, String tkName) throws IOException, URISyntaxException {
+    private static Path pack(final Path folder, JsonObject graph, String tkName) throws IOException, URISyntaxException {
+        String namespace = splAppNamespace(graph);
+        String name = splAppName(graph);
+
         Path zipFilePath = Paths.get(folder.toAbsolutePath().toString() + ".zip");
         String workingDir = zipFilePath.getParent().toString();
         
         Path topologyToolkit = TkInfo.getTopologyToolkitRoot().getAbsoluteFile().toPath();  
         
+        // Paths to copy into the toolkit
+        Map<Path, String> paths = new HashMap<>();
+        
         // tkManifest is the list of toolkits contained in the archive
         try (PrintWriter tkManifest = new PrintWriter("manifest_tk.txt", "UTF-8")) {
             tkManifest.println(tkName);
             tkManifest.println("com.ibm.streamsx.topology");
+            
+            JsonObject configSpl = object(graph, CONFIG, "spl");
+            if (configSpl != null) {
+                objectArray(configSpl, "toolkits",
+                        tk -> {
+                            File tkRoot = new File(jstring(tk, "root"));
+                            String tkRootName = tkRoot.getName();
+                            tkManifest.println(tkRootName);
+                            paths.put(tkRoot.toPath(), tkRootName);
+                            }
+                        );
+            }
         }
         
         // mainComposite is a string of the namespace and the main composite.
@@ -82,7 +119,7 @@ public class ZippedToolkitRemoteContext extends ToolkitRemoteContext {
         Path mainComp = Paths.get(workingDir, "main_composite.txt");
         Path makefile = topologyToolkit.resolve(Paths.get("opt", "python", "templates", "common", "Makefile.template"));
         
-        Map<Path, String> paths = new HashMap<>();
+        
         paths.put(topologyToolkit, topologyToolkit.getFileName().toString());
         paths.put(manifest, "manifest_tk.txt");
         paths.put(mainComp, "main_composite.txt");
@@ -98,8 +135,7 @@ public class ZippedToolkitRemoteContext extends ToolkitRemoteContext {
     
     
     private static void addAllToZippedArchive(Map<Path, String> starts, Path zipFilePath) throws IOException {
-        try (FileOutputStream fos = new FileOutputStream(zipFilePath.toFile());
-                ZipOutputStream zos = new ZipOutputStream(fos)) {
+        try (ZipArchiveOutputStream zos = new ZipArchiveOutputStream(zipFilePath.toFile())) {
             for (Path start : starts.keySet()) {
                 final String rootEntryName = starts.get(start);
                 Files.walkFileTree(start, new SimpleFileVisitor<Path>() {
@@ -116,9 +152,16 @@ public class ZippedToolkitRemoteContext extends ToolkitRemoteContext {
                         }
                         // Zip uses forward slashes
                         entryName = entryName.replace(File.separatorChar, '/');
-                        zos.putNextEntry(new ZipEntry(entryName));
+                        
+                        ZipArchiveEntry entry = new ZipArchiveEntry(file.toFile(), entryName);
+                        if (Files.isExecutable(file))
+                            entry.setUnixMode(0100770);
+                        else
+                            entry.setUnixMode(0100660);
+
+                        zos.putArchiveEntry(entry);
                         Files.copy(file, zos);
-                        zos.closeEntry();
+                        zos.closeArchiveEntry();
                         return FileVisitResult.CONTINUE;
                     }
 
@@ -128,8 +171,9 @@ public class ZippedToolkitRemoteContext extends ToolkitRemoteContext {
                         if (dirName.equals("__pycache__"))
                             return FileVisitResult.SKIP_SUBTREE;
                                                 
-                        zos.putNextEntry(new ZipEntry(rootEntryName + "/" + start.relativize(dir).toString().replace(File.separatorChar, '/') + "/"));
-                        zos.closeEntry();
+                        ZipArchiveEntry dirEntry = new ZipArchiveEntry(dir.toFile(), rootEntryName + "/" + start.relativize(dir).toString().replace(File.separatorChar, '/') + "/");
+                        zos.putArchiveEntry(dirEntry);
+                        zos.closeArchiveEntry();
                         return FileVisitResult.CONTINUE;
                     }
                 });

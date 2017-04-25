@@ -18,6 +18,7 @@
 
 #include "splpy_general.h"
 #include "splpy_setup.h"
+#include "splpy_tuple.h"
 #include "splpy_op.h"
 
 #include <string>
@@ -48,15 +49,17 @@ namespace streamsx {
 
       public:
 
-    // Call the function passing an SPL attribute
-    // converted to a Python object and discard the return 
+    /*
+     * Call the function passing an SPL attribute
+     * converted to a Python object and discard the return 
+     * Implementation for function ForEach operator.
+     */
     template <class T>
-    static void pyTupleSink(PyObject * function, T & splVal) {
+    static void pyTupleForEach(PyObject * function, T & splVal) {
       SplpyGIL lock;
 
-      PyObject * arg = pySplValueToPyObject(splVal);
-
-      PyObject * pyReturnVar = pyTupleFunc(function, arg);
+      // invoke python nested function that calls the application function
+      PyObject * pyReturnVar = pySplProcessTuple(function, splVal);
 
       if(pyReturnVar == 0){
         throw SplpyGeneral::pythonException("sink");
@@ -68,15 +71,15 @@ namespace streamsx {
     /*
     * Call a function passing the SPL attribute value of type T
     * and return the function return as a boolean
+    * Implementation for function Filter operator.
     */
     template <class T>
     static int pyTupleFilter(PyObject * function, T & splVal) {
 
       SplpyGIL lock;
 
-      PyObject * arg = pySplValueToPyObject(splVal);
-
-      PyObject * pyReturnVar = pyTupleFunc(function, arg);
+      // invoke python nested function that calls the application function
+      PyObject * pyReturnVar = pySplProcessTuple(function, splVal);
 
       if(pyReturnVar == 0){
         throw SplpyGeneral::pythonException("filter");
@@ -91,15 +94,14 @@ namespace streamsx {
     /*
     * Call a function passing the SPL attribute value of type T
     * and fill in the SPL attribute of type R with its result.
+    * Implementation for function Map operator.
     */
     template <class T, class R>
-    static int pyTupleTransform(PyObject * function, T & splVal, R & retSplVal) {
+    static int pyTupleMap(PyObject * function, T & splVal, R & retSplVal) {
       SplpyGIL lock;
 
-      PyObject * arg = pySplValueToPyObject(splVal);
-
       // invoke python nested function that calls the application function
-      PyObject * pyReturnVar = pyTupleFunc(function, arg);
+      PyObject * pyReturnVar = pySplProcessTuple(function, splVal);
 
       if (SplpyGeneral::isNone(pyReturnVar)) {
         Py_DECREF(pyReturnVar);
@@ -135,20 +137,6 @@ namespace streamsx {
       return hash;
    }
 
-    /**
-     * Call a Python function passing in the SPL tuple as 
-     * the single element of a Python tuple.
-     * Steals the reference to value.
-    */
-    static PyObject * pyTupleFunc(PyObject * function, PyObject * value) {
-      PyObject * pyTuple = PyTuple_New(1);
-      PyTuple_SET_ITEM(pyTuple, 0, value);
-
-      PyObject * pyReturnVar = PyObject_CallObject(function, pyTuple);
-      Py_DECREF(pyTuple);
-
-      return pyReturnVar;
-    }
 
     /**
      *  Return a Python tuple containing the attribute

@@ -52,6 +52,9 @@ sub splToPythonConversionCheck{
     elsif(SPL::CodeGen::Type::isBoolean($type)) {
       return;
     } 
+    elsif(SPL::CodeGen::Type::isTimestamp($type)) {
+      return;
+    }
     elsif (SPL::CodeGen::Type::isComplex32($type) || SPL::CodeGen::Type::isComplex64($type)) {
       return;
     }
@@ -178,6 +181,8 @@ sub splpy_inputtuple2value{
 
  if ($pystyle eq 'dict') {
   # nothing done here for dict style 
+  # instead cgt is used to generate code specific
+  # the input schema
  }
 }
 

@@ -56,6 +56,8 @@ class SPLGraph(object):
         self.operators = []
         self.resolver = streamsx.topology.dependency._DependencyResolver(self.topology)
         self._views = []
+        self._spl_toolkits = []
+        self._used_names = {'list', 'tuple', 'int'}
 
     def get_views(self):
         return self._views
@@ -63,24 +65,51 @@ class SPLGraph(object):
     def add_views(self, view):
         self._views.append(view)
 
+    def _requested_name(self, name, action=None, func=None):
+        """Create a unique name for an operator or a stream.
+        """
+        if name is not None:
+            if name in self._used_names:
+                # start at 2 for the "second" one of this name
+                n = 2
+                while True:
+                    pn = name + '_' + str(n)
+                    if pn not in self._used_names:
+                        self._used_names.add(pn)
+                        return pn
+                    n += 1
+            else:
+                self._used_names.add(name)
+                return name
+
+        if func is not None:
+            if hasattr(func, '__name__'):
+                name = func.__name__
+                if name == '<lambda>':
+                    # Avoid use of <> characters in name
+                    # as they are converted to unicode
+                    # escapes in SPL identifier
+                    name = action + '_lambda'
+            elif hasattr(func, '__class__'):
+                name = func.__class__.__name__
+
+        if name is None:
+            if action is not None:
+                name = action
+            else:
+                name = self.name
+
+        # Recurse once to get unique version of name
+        return self._requested_name(name)
+
+
     def addOperator(self, kind, function=None, name=None, params=None, sl=None):
         if(params is None):
             params = {}
+
         if name is None:
-            if function is not None:
-               if hasattr(function, '__name__'):
-                   n = function.__name__
-                   if n == '<lambda>':
-                       # Avoid use of <> characters in name
-                       # as they are converted to unicode
-                       # escapes in SPL identifier
-                       n = 'lambda'
-                   name = n + "_"
-               elif hasattr(function, '__class__'):
-                   name = function.__class__.__name__ + "_"
-            else:
-               name = self.name + "_OP"
-        name = name + str(len(self.operators))
+            name = self._requested_name(None,action="Op", func = function)
+
         if(kind.startswith("$")):    
             op = Marker(len(self.operators), kind, name, {}, self)                           
         else:
@@ -110,6 +139,8 @@ class SPLGraph(object):
         _graph["public"] = True
         _graph["config"] = {}
         _graph["config"]["includes"] = []
+        _graph['config']['spl'] = {}
+        _graph['config']['spl']['toolkits'] = self._spl_toolkits
         _ops = []
         self.addModules(_graph["config"]["includes"])
         self.addPackages(_graph["config"]["includes"])
@@ -152,6 +183,7 @@ class _SPLInvocation(object):
         self.graph = graph
         self.viewable = True
         self.sl = sl
+        self._placement = {}
 
         if view_configs is None:
             self.view_configs = []
@@ -161,10 +193,10 @@ class _SPLInvocation(object):
         self.inputPorts = []
         self.outputPorts = []
 
-    def addOutputPort(self, oWidth=None, name=None, inputPort=None, schema= CommonSchema.Python,partitioned=None):
+    def addOutputPort(self, oWidth=None, name=None, inputPort=None, schema= CommonSchema.Python,partitioned_keys=None):
         if name is None:
             name = self.name + "_OUT"+str(len(self.outputPorts))
-        oport = OPort(name, self, len(self.outputPorts), schema, oWidth, partitioned)
+        oport = OPort(name, self, len(self.outputPorts), schema, oWidth, partitioned_keys)
         self.outputPorts.append(oport)
         if schema == CommonSchema.Python:
             self.viewable = False
@@ -225,6 +257,8 @@ class _SPLInvocation(object):
         _op["config"] = {}
         _op["config"]["streamViewability"] = self.viewable
         _op["config"]["viewConfigs"] = self.view_configs
+        if self._placement:
+            _op["config"]["placement"] = self._placement
         _params = {}
         # Add parameters as their string representation
         # unless they value has a spl_json() function,
@@ -274,7 +308,21 @@ class _SPLInvocation(object):
 
         # note: functions in the __main__ module cannot be used as input to operations 
         # function.__module__ will be '__main__', so C++ operators cannot import the module
-        self.params["pyModule"] = function.__module__          
+        self.params["pyModule"] = function.__module__
+
+    def colocate(self, other, why):
+        """
+        Colocate this operator with another.
+        Only supports the case where topology inserts
+        an operator to fufill the required method.
+        """
+        if isinstance(self, Marker):
+            return
+        colocate_id = self._placement.get('explicitColocate')
+        if colocate_id is None:
+            colocate_id = '__spl_' + why + '_' + str(self.index)
+            self._placement['explicitColocate'] = colocate_id
+        other._placement['explicitColocate'] = colocate_id
 
     def _printOperator(self):
         print(self.name+":")
@@ -308,13 +356,14 @@ class IPort(object):
         return _iport
 
 class OPort(object):
-    def __init__(self, name, operator, index, schema, width=None, partitioned=None):
+    def __init__(self, name, operator, index, schema, width=None, partitioned_keys=None):
         self.name = name
         self.operator = operator
         self.schema = _stream_schema(schema)
         self.index = index
         self.width = width
-        self.partitioned =  partitioned
+        self.partitioned = partitioned_keys is not None
+        self.partitioned_keys = partitioned_keys
 
         self.inputPorts = []
 
@@ -334,6 +383,8 @@ class OPort(object):
             _oport["width"] = int(self.width)
         if not self.partitioned is None:
             _oport["partitioned"] = self.partitioned
+        if self.partitioned_keys is not None:
+            _oport["partitionedKeys"] = self.partitioned_keys
         return _oport
 
 class Marker(_SPLInvocation):

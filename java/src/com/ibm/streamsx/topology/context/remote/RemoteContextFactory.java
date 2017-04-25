@@ -7,17 +7,18 @@ import com.ibm.streamsx.topology.internal.context.remote.ZippedToolkitRemoteCont
 public class RemoteContextFactory {
     
     public static RemoteContext<?> getRemoteContext(String type) {
-        return getRemoteContext(RemoteContext.Type.valueOf(type));
+        return getRemoteContext(RemoteContext.Type.valueOf(type), true);
     }
 
-    public static RemoteContext<?> getRemoteContext(RemoteContext.Type type) {
+    public static RemoteContext<?> getRemoteContext(final RemoteContext.Type type, final boolean keepArtifact) {
         switch (type) {
         case TOOLKIT:
-            return new ToolkitRemoteContext();
+            return new ToolkitRemoteContext(keepArtifact);
         case BUILD_ARCHIVE:
-            return new ZippedToolkitRemoteContext();
-	case ANALYTICS_SERVICE:
-	    return new RemoteBuildAndSubmitRemoteContext();
+            return new ZippedToolkitRemoteContext(keepArtifact);
+        case ANALYTICS_SERVICE:
+        case STREAMING_ANALYTICS_SERVICE:
+        	return new RemoteBuildAndSubmitRemoteContext();
         default:
             throw new IllegalArgumentException("Unknown type:" + type);
         }

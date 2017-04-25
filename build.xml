@@ -15,14 +15,6 @@
     <ant dir="samples/python" inheritAll="true"/>
     <ant dir="test/java" inheritAll="true"/>
     <ant dir="test/python" inheritAll="true"/>
-   <exec executable="git">
-      <arg value="clone"/>
-      <arg value="https://github.com/IBMStreams/streamsx.utility.git"/>
-   </exec>
-    <copy todir="${streamsx.py}">
-      <fileset dir="streamsx.utility/python/packages/streamsx" excludes="**/__init__.py"/>
-    </copy>
-   <delete dir="streamsx.utility"/>
   </target>
 
   <target name="clean" >
@@ -41,8 +33,6 @@
       <fileset dir="${tk}/impl/nl" includes="*.dat"/>
     </delete>
     <delete dir="${release.base}"/>
-    <delete dir="streamsx.utility"/>
-    <delete file="${streamsx.py}/rest.py"/>
   </target>
 
   <target name="test" >
@@ -92,9 +82,10 @@
           >
             <fileset dir="java/src">
                <include name="com/ibm/streamsx/topology/**"/>
+               <exclude name="com/ibm/streamsx/topology/context/remote/**"/>
                <exclude name="com/ibm/streamsx/topology/internal/**"/>
                <exclude name="com/ibm/streamsx/topology/builder/**"/>
-               <exclude name="com/ibm/streamsx/topology/generator/spl/**"/>
+               <exclude name="com/ibm/streamsx/topology/generator/**"/>
             </fileset>
        </javadoc>
        <ant dir="toolkit" target="spldoc"/>
@@ -106,7 +97,7 @@
       <tstamp/>
       <property name="release.dir" location="${release.base}" />
       <mkdir dir="${release.dir}" />
-      <property name="releasefilename" value="${release.dir}/streamsx.topology-v1.5-${DSTAMP}-${TSTAMP}.tgz"/>
+      <property name="releasefilename" value="${release.dir}/streamsx.topology-v1.6-${DSTAMP}-${TSTAMP}.tgz"/>
       <tar compression="gzip" longfile="gnu" destfile="${releasefilename}">
          <tarfileset dir="${basedir}" filemode="755" >
            <include name="**/pyversion*.sh"/>

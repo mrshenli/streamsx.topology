@@ -30,6 +30,7 @@ import com.ibm.streamsx.topology.context.remote.RemoteContext;
 import com.ibm.streamsx.topology.internal.context.remote.SubmissionResultsKeys;
 import com.ibm.streamsx.topology.internal.core.InternalProperties;
 import com.ibm.streamsx.topology.internal.graph.GraphKeys;
+import com.ibm.streamsx.topology.internal.gson.GsonUtilities;
 import com.ibm.streamsx.topology.internal.process.CompletedFuture;
 import com.ibm.streamsx.topology.internal.streams.InvokeSc;
 
@@ -41,11 +42,11 @@ public class BundleStreamsContext extends ToolkitStreamsContext {
     static final Logger trace = Topology.TOPOLOGY_LOGGER;
 
     private final boolean standalone;
-    private final boolean byBundleUser;
+    private final boolean keepBundle;
 
-    public BundleStreamsContext(boolean standalone, boolean byBundleUser) {
+    public BundleStreamsContext(boolean standalone, boolean keepBundle) {
         this.standalone = standalone;
-        this.byBundleUser = byBundleUser;
+        this.keepBundle = keepBundle;
     }
 
     @Override
@@ -68,12 +69,14 @@ public class BundleStreamsContext extends ToolkitStreamsContext {
     	// Create a Job Config Overlays file if this is creating
     	// a sab for subsequent distributed deployment
     	// or keepArtifacts is set.
-    	if (!standalone && (!byBundleUser || keepArtifacts(submission)))
+    	if (!standalone && (keepBundle || keepArtifacts(submission)))
     	    createJobConfigOverlayFile(submission, deploy, bundle.get().getParentFile());
     	
-    	JsonObject results = new JsonObject();
-        results.addProperty(SubmissionResultsKeys.BUNDLE_PATH, bundle.get().getAbsolutePath());
-        submission.add(RemoteContext.SUBMISSION_RESULTS, results);
+    	// If user asked for the SAB or asked to keep the SAB explicitly
+    	if (keepBundle || keepArtifacts(submission)) {
+    		final JsonObject submissionResult = GsonUtilities.objectCreate(submission, RemoteContext.SUBMISSION_RESULTS);
+    		submissionResult.addProperty(SubmissionResultsKeys.BUNDLE_PATH, bundle.get().getAbsolutePath());
+    	}
     	
     	return bundle;
     }

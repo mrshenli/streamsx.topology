@@ -31,6 +31,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.ibm.streamsx.topology.context.remote.RemoteContext;
+import com.ibm.streamsx.topology.internal.gson.GsonUtilities;
 import com.ibm.streamsx.topology.internal.streaminganalytics.RestUtils;
 
 class BuildServiceRemoteRESTWrapper {
@@ -69,18 +70,22 @@ class BuildServiceRemoteRESTWrapper {
 			String outputId = jstring(build, "output_id");
 
 			// Loop until built
-			String status = "";
+			String status = buildStatusGet(buildId, httpclient, apiKey);
 			while (!status.equals("built")) {
-				status = buildStatusGet(buildId, httpclient, apiKey);
-				if (status.equals("building")) {
+				// 'building', 'notBuilt', and 'waiting' are all states which can eventualy result in 'built'
+				// sleep and continue to monitor
+				if (status.equals("building") || status.equals("notBuilt") || status.equals("waiting")) {
 					try {
 						Thread.sleep(1000);
 					} catch (InterruptedException e) {
 						Thread.currentThread().interrupt();
 					}
+					status = buildStatusGet(buildId, httpclient, apiKey);
 					continue;
-				} else if (status.equals("failed")) {
-					RemoteContext.REMOTE_LOGGER.severe("Streaming Analytics service (" + serviceName + "): The submitted archive " + archive.getName() + " failed to build.");
+				} 
+				// The remaining possible states are 'failed', 'timeout', 'canceled', 'canceling', and 'unknown', none of which can lead to a state of 'built', so we throw an error.
+				else {
+					RemoteContext.REMOTE_LOGGER.severe("Streaming Analytics service (" + serviceName + "): The submitted archive " + archive.getName() + " failed to build with status " + status + ".");
 					JsonObject output = getBuildOutput(buildId, outputId, httpclient, apiKey);
 					String strOutput = "";
 					if (output != null)
@@ -103,7 +108,8 @@ class BuildServiceRemoteRESTWrapper {
 			JsonObject response = doSubmitJobFromBuildArtifactPut(httpclient, deploy, apiKey, artifactId);
 			
 			// Pass back to Python
-			submission.add(RemoteContext.SUBMISSION_RESULTS, response);
+			final JsonObject submissionResult = GsonUtilities.objectCreate(submission, RemoteContext.SUBMISSION_RESULTS);
+			GsonUtilities.addAll(submissionResult, response);
 		} finally {
 			httpclient.close();
 

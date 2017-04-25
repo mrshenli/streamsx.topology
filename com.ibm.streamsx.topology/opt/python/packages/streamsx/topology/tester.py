@@ -2,12 +2,70 @@
 # Licensed Materials - Property of IBM
 # Copyright IBM Corp. 2017
 
+"""Testing support for streaming applications.
+
+Allows testing of a streaming application by creation conditions
+on streams that are expected to become valid during the processing.
+`Tester` is designed to be used with Python's `unittest` module.
+
+A complete application may be tested or fragments of it, for example a sub-graph can be tested
+in isolation that takes input data and scores it using a model.
+
+Supports execution of the application on
+:py:const:`~streamsx.topology.context.ContextTypes.STREAMING_ANALYTICS_SERVICE`,
+:py:const:`~streamsx.topology.context.ContextTypes.DISTRIBUTED`
+or :py:const:`~streamsx.topology.context.ContextTypes.STANDALONE`.
+
+A :py:class:`Tester` instance is created and associated with the :py:class:`Topology` to be tested.
+Conditions are then created against streams, such as a stream must receive 10 tuples using
+:py:meth:`~Tester.tuple_count`.
+
+Here is a simple example that tests a filter correctly only passes tuples with values greater than 5::
+
+    import unittest
+    from streamsx.topology.topology import Topology
+    from streamsx.topology.tester import Tester
+
+    class TestSimpleFilter(unittest.TestCase):
+
+        def setUp(self):
+            # Sets self.test_ctxtype and self.test_config
+            Tester.setup_streaming_analytics(self)
+
+        def test_filter(self):
+            # Declare the application to be tested
+            topology = Topology()
+            s = topology.source([5, 7, 2, 4, 9, 3, 8])
+            s = s.filter(lambda x : x > 5)
+
+            # Create tester and assign conditions
+            tester = Tester(topology)
+            tester.contents(s, [7, 9, 8])
+
+            # Submit the application for test
+            # If it fails an AssertionError will be raised.
+           tester.test(self.test_ctxtype, self.test_config)
+
+
+A stream may have any number of conditions and any number of streams may be tested.
+
+.. warning::
+    Python 3.5 and Streaming Analytics service or IBM Streams 4.2 or later is required when using `Tester`.
+"""
+
 import streamsx.ec as ec
-import streamsx.topology.context
+import streamsx.topology.context as stc
 import os
 import unittest
 import logging
 import collections
+import threading
+from streamsx.rest import StreamsConnection
+from streamsx.rest import StreamingAnalyticsConnection
+from streamsx.topology.context import ConfigParams
+import time
+
+
 
 _logger = logging.getLogger('streamsx.topology.test')
 
@@ -27,21 +85,26 @@ class Tester(object):
     If a topology is submitted through the test method then the topology
     may be modified to include operations to ensure the conditions are met.
 
+    .. warning::
+        For future compatibility applications under test should not include intended failures that cause
+        a processing element to stop or restart. Thus, currently testing is against expected application behavior.
+
     Args:
         topology: Topology to be tested.
     """
     def __init__(self, topology):
-       self.topology = topology
-       topology.tester = self
-       self._conditions = {}
+        self.topology = topology
+        topology.tester = self
+        self._conditions = {}
+        self.local_check = None
 
     @staticmethod
     def setup_standalone(test):
         """
-        Setup a unittest.TestCase to run tests using IBM Streams standalone mode.
+        Set up a unittest.TestCase to run tests using IBM Streams standalone mode.
 
         Requires a local IBM Streams install define by the STREAMS_INSTALL
-        environment variable. If STREAMS_INSTALL is not set then the
+        environment variable. If STREAMS_INSTALL is not set, then the
         test is skipped.
 
         Two attributes are set in the test case:
@@ -55,26 +118,26 @@ class Tester(object):
         """
         if not 'STREAMS_INSTALL' in os.environ:
             raise unittest.SkipTest("Skipped due to no local IBM Streams install")
-        test.test_ctxtype = "STANDALONE"
+        test.test_ctxtype = stc.ContextTypes.STANDALONE
         test.test_config = {}
 
     @staticmethod
     def setup_distributed(test):
         """
-        Setup a unittest.TestCase to run tests using IBM Streams distributed mode.
+        Set up a unittest.TestCase to run tests using IBM Streams distributed mode.
 
         Requires a local IBM Streams install define by the STREAMS_INSTALL
         environment variable. If STREAMS_INSTALL is not set then the
         test is skipped.
 
-        The Steams instance to use is defined by the environment variables:
+        The Streams instance to use is defined by the environment variables:
          * STREAMS_ZKCONNECT - Zookeeper connection string
          * STREAMS_DOMAIN_ID - Domain identifier
          * STREAMS_INSTANCE_ID - Instance identifier
 
         Two attributes are set in the test case:
          * test_ctxtype - Context type the test will be run in.
-         * test_config- Test configuration.
+         * test_config - Test configuration.
 
         Args:
             test(unittest.TestCase): Test case to be set up to run tests using Tester
@@ -88,25 +151,27 @@ class Tester(object):
             raise unittest.SkipTest("Skipped due to STREAMS_INSTANCE_ID environment variable not set")
         if not 'STREAMS_DOMAIN_ID' in os.environ:
             raise unittest.SkipTest("Skipped due to STREAMS_DOMAIN_ID environment variable not set")
-        if not 'STREAMS_ZKCONNECT' in os.environ:
-            raise unittest.SkipTest("Skipped due to STREAMS_ZKCONNECT environment variable not set")
 
-        test.test_ctxtype = "DISTRIBUTED"
+        test.username = os.getenv("STREAMS_USERNAME", "streamsadmin")
+        test.password = os.getenv("STREAMS_PASSWORD", "passw0rd")
+
+        test.test_ctxtype = stc.ContextTypes.DISTRIBUTED
         test.test_config = {}
 
+    @staticmethod
     def setup_streaming_analytics(test, service_name=None, force_remote_build=False):
         """
-        Setup a unittest.TestCase to run tests using Streaming Analytics service on IBM Bluemix cloud platform.
+        Set up a unittest.TestCase to run tests using Streaming Analytics service on IBM Bluemix cloud platform.
 
         The service to use is defined by:
          * VCAP_SERVICES environment variable containing `streaming_analytics` entries.
          * service_name which defaults to the value of STREAMING_ANALYTICS_SERVICE_NAME environment variable.
 
-        If VCAP_SERVICES is not set or a service name is not defined then the test is skipped.
+        If VCAP_SERVICES is not set or a service name is not defined, then the test is skipped.
 
         Two attributes are set in the test case:
          * test_ctxtype - Context type the test will be run in.
-         * test_config- Test configuration.
+         * test_config - Test configuration.
 
         Args:
             test(unittest.TestCase): Test case to be set up to run tests using Tester
@@ -118,7 +183,7 @@ class Tester(object):
         if not 'VCAP_SERVICES' in os.environ:
             raise unittest.SkipTest("Skipped due to VCAP_SERVICES environment variable not set")
 
-        test.test_ctxtype = "ANALYTICS_SERVICE"
+        test.test_ctxtype = stc.ContextTypes.STREAMING_ANALYTICS_SERVICE
         if service_name is None:
             service_name = os.environ.get('STREAMING_ANALYTICS_SERVICE_NAME', None)
         if service_name is None:
@@ -128,22 +193,50 @@ class Tester(object):
             test.test_config['topology.forceRemoteBuild'] = True
 
     def add_condition(self, stream, condition):
-        self._conditions[condition.name] = (stream, condition)
-        return stream
+        """Add a condition to a stream.
 
-    def tuple_count(self, stream, count):
-        """Test that that a stream returns an exact number of tuples.
+        Conditions are normally added through :py:meth:`tuple_count`, :py:meth:`contents` or :py:meth:`tuple_check`.
+
+        This allows an additional conditions that are implementations of :py:class:`Condition`.
 
         Args:
             stream(Stream): Stream to be tested.
-            count: Number of tuples expected.
+            condition(Condition): Arbitrary condition.
 
-        Returns: stream
+        Returns:
+            Stream: stream
+        """
+        self._conditions[condition.name] = (stream, condition)
+        return stream
 
+    def tuple_count(self, stream, count, exact=True):
+        """Test that a stream contains a number of tuples.
+
+        If `exact` is `True`, then condition becomes valid when `count`
+        tuples are seen on `stream` during the test. Subsequently if additional
+        tuples are seen on `stream` then the condition fails and can never
+        become valid.
+
+        If `exact` is `False`, then the condition becomes valid once `count`
+        tuples are seen on `stream` and remains valid regardless of
+        any additional tuples.
+
+        Args:
+            stream(Stream): Stream to be tested.
+            count(int): Number of tuples expected.
+            exact(bool): `True` if the stream must contain exactly `count`
+                tuples, `False` if the stream must contain at least `count` tuples.
+
+        Returns:
+            Stream: stream
         """
         _logger.debug("Adding tuple count (%d) condition to stream %s.", count, stream)
-        name = "ExactCount" + str(len(self._conditions));
-        cond = _TupleExactCount(count, name)
+        if exact:
+            name = "ExactCount" + str(len(self._conditions))
+            cond = _TupleExactCount(count, name)
+        else:
+            name = "AtLeastCount" + str(len(self._conditions))
+            cond = _TupleAtLeastCount(count, name)
         return self.add_condition(stream, cond)
 
     def contents(self, stream, expected, ordered=True):
@@ -155,27 +248,150 @@ class Tester(object):
             ordered(bool): True if the ordering of received tuples must match expected.
 
         Returns:
-
+            Stream: stream
         """
-        name = "StreamContents" + str(len(self._conditions));
+        name = "StreamContents" + str(len(self._conditions))
         if ordered:
             cond = _StreamContents(expected, name)
         else:
             cond = _UnorderedStreamContents(expected, name)
         return self.add_condition(stream, cond)
 
-    def test(self, ctxtype, config=None, assert_on_fail=True):
+    def tuple_check(self, stream, checker):
+        """Check each tuple on a stream.
+
+        For each tuple ``t`` on `stream` ``checker(t)`` is called.
+
+        If the return evaluates to `False` then the condition fails.
+        Once the condition fails it can never become valid.
+        Otherwise the condition becomes or remains valid. The first
+        tuple on the stream makes the condition valid if the checker
+        callable evaluates to `True`.
+
+        The condition can be combined with :py:meth:`tuple_count` with
+        ``exact=False`` to test a stream map or filter with random input data.
+
+        An example of combining `tuple_count` and `tuple_check` to test a filter followed
+        by a map is working correctly across a random set of values::
+
+            def rands():
+                r = random.Random()
+                while True:
+                    yield r.random()
+
+            class TestFilterMap(unittest.testCase):
+            # Set up omitted
+
+                def test_filter(self):
+                    # Declare the application to be tested
+                    topology = Topology()
+                    r = topology.source(rands())
+                    r = r.filter(lambda x : x > 0.7)
+                    r = r.map(lambda x : x + 0.2)
+
+                    # Create tester and assign conditions
+                    tester = Tester(topology)
+                    # Ensure at least 1000 tuples pass through the filter.
+                    tester.tuple_count(r, 1000, exact=False)
+                    tester.tuple_check(r, lambda x : x > 0.9)
+
+
+                    # Submit the application for test
+                    # If it fails an AssertionError will be raised.
+                    tester.test(self.test_ctxtype, self.test_config)
+
+        Args:
+            stream(Stream): Stream to be tested.
+            checker(callable): Callable that must evaluate to True for each tuple.
+
+        """
+        name = "TupleCheck" + str(len(self._conditions))
+        cond = _TupleCheck(checker, name)
+        return self.add_condition(stream, cond)
+
+    def local_check(self, callable):
+        """Perform local check while the application is being tested.
+
+        A call to `callable` is made after the application under test is submitted.
+        The check is in the context of the Python runtime executing the unittest case,
+        typically the callable is a method of the test case.
+
+        The application remains running until all the conditions are met
+        and `callable` returns. If `callable` raises an error, typically
+        through an assertion method from `unittest` then the test will fail.
+
+        Used for testing side effects of the application, typically with `STREAMING_ANALYTICS_SERVICE`
+        or `DISTRIBUTED`. The callable may also use the REST api for context types that support
+        it to dynamically monitor the running application.
+
+        The callable can use `submission_result` and `streams_connection` attributes from :py:class:`Tester` instance
+        to interact with the job or the running Streams instance.
+
+        Simple example of checking the job is healthy::
+
+            import unittest
+            from streamsx.topology.topology import Topology
+            from streamsx.topology.tester import Tester
+
+            class TestLocalCheckExample(unittest.TestCase):
+                def setUp(self):
+                    Tester.setup_distributed(self)
+
+                def test_job_is_healthy(self):
+                    topology = Topology()
+                    s = topology.source(['Hello', 'World'])
+
+                    self.tester = Tester(topology)
+                    self.tester.tuple_count(s, 2)
+
+                    # Add the local check
+                    self.tester.local_check = self.local_checks
+
+                    # Run the test
+                    self.tester.test(self.test_ctxtype, self.test_config)
+
+
+                def local_checks(self):
+                    job = self.tester.submission_result.job
+                    self.assertEqual('healthy', job.health)
+
+        .. warning::
+            A local check must not cancel the job (application under test).
+
+        Args:
+            callable: Callable object.
+        """
+        self.local_check = callable
+
+    def test(self, ctxtype, config=None, assert_on_fail=True, username=None, password=None):
         """Test the topology.
 
         Submits the topology for testing and verifies the test conditions are met.
+
+        The submitted application (job) is monitored for the test conditions and
+        will be canceled when all the conditions are valid or at least one failed.
+        In addition if a local check was specified using :py:meth:`local_check` then
+        that callable must complete before the job is cancelled.
+
+        The test passes if all conditions became valid and the local check callable (if present) completed without
+        raising an error.
+
+        The test fails if any condition fails or the local check callable (if present) raised an exception.
 
         Args:
             ctxtype(str): Context type for submission.
             config: Configuration for submission.
             assert_on_fail(bool): True to raise an assertion if the test fails, False to return the passed status.
+            username(str): username for distributed tests
+            password(str): password for distributed tests
+
+        Attributes:
+            submission_result: Result of the application submission from :py:func:`~streamsx.topology.context.submit`.
+            streams_connection(StreamsConnection): Connection object that can be used to interact with the REST API of
+                the Streaming Analytics service or instance.
 
         Returns:
-            bool: True if test passed, False if test failed.
+            bool: `True` if test passed, `False` if test failed if `assert_on_fail` is `False`.
 
         """
 
@@ -188,15 +404,14 @@ class Tester(object):
 
         if config is None:
             config = {}
-
         _logger.debug("Starting test topology %s context %s.", self.topology.name, ctxtype)
 
-        if "STANDALONE" == ctxtype:
+        if stc.ContextTypes.STANDALONE == ctxtype:
             passed = self._standalone_test(config)
-        elif "DISTRIBUTED" == ctxtype:
-            passed = self._distributed_test(config)
-        elif "ANALYTICS_SERVICE" == ctxtype:
-            passed = self._streaming_analytics_test(config)
+        elif stc.ContextTypes.DISTRIBUTED == ctxtype:
+            passed = self._distributed_test(config, username, password)
+        elif stc.ContextTypes.STREAMING_ANALYTICS_SERVICE == ctxtype or stc.ContextTypes.ANALYTICS_SERVICE == ctxtype:
+            passed = self._streaming_analytics_test(ctxtype, config)
         else:
             raise NotImplementedError("Tester context type not implemented:", ctxtype)
 
@@ -206,36 +421,77 @@ class Tester(object):
             _logger.info("Test topology %s passed for context:%s", self.topology.name, ctxtype)
         else:
             _logger.error("Test topology %s failed for context:%s", self.topology.name, ctxtype)
+        return passed
 
     def _standalone_test(self, config):
         """ Test using STANDALONE.
-        Success is soley indicated by the process completing and returning zero.
+        Success is solely indicated by the process completing and returning zero.
         """
-        sr = streamsx.topology.context.submit("STANDALONE", self.topology, config)
+        sr = stc.submit(stc.ContextTypes.STANDALONE, self.topology, config)
+        self.submission_result = sr
         self.result = {'passed': sr['return_code'], 'submission_result': sr}
         return sr['return_code'] == 0
 
-    def _distributed_test(self, config):
-
-        sjr = streamsx.topology.context.submit("DISTRIBUTED", self.topology, config)
+    def _distributed_test(self, config, username, password):
+        self.streams_connection = config.get(ConfigParams.STREAMS_CONNECTION)
+        if self.streams_connection is None:
+            # Supply a default StreamsConnection object with SSL verification disabled, because the default
+            # streams server is not shipped with a valid SSL certificate
+            self.streams_connection = StreamsConnection(username, password)
+            self.streams_connection.session.verify = False
+            config[ConfigParams.STREAMS_CONNECTION] = self.streams_connection
+        sjr = stc.submit(stc.ContextTypes.DISTRIBUTED, self.topology, config)
+        self.submission_result = sjr
         if sjr['return_code'] != 0:
-            print("DO AS LOGGER", "Failed to submit job to distributed instance.")
+            _logger.error("Failed to submit job to distributed instance.")
             return False
-        sc = StreamsConnection()
-        return self._distributed_wait_for_result(sc, sjr)
+        return self._distributed_wait_for_result()
 
-    def _streaming_analytics_test(self, config):
-        sjr = streamsx.topology.context.submit("ANALYTICS_SERVICE", self.topology, config)
-        sc = StreamsConnection(config=config)
-        return self._distributed_wait_for_result(sc, sjr)
+    def _streaming_analytics_test(self, ctxtype, config):
+        sjr = stc.submit(ctxtype, self.topology, config)
+        self.submission_result = sjr
+        self.streams_connection = config.get(ConfigParams.STREAMS_CONNECTION)
+        if self.streams_connection is None:
+            vcap_services = config.get(ConfigParams.VCAP_SERVICES)
+            service_name = config.get(ConfigParams.SERVICE_NAME)
+            self.streams_connection = StreamingAnalyticsConnection(vcap_services, service_name)
+        if sjr['return_code'] != 0:
+            _logger.error("Failed to submit job to Streaming Analytics instance")
+            return False
+        return self._distributed_wait_for_result()
 
-    def _distributed_wait_for_result(self, sc, sjr):
-        cc = _ConditionChecker(self, sc, sjr)
+    def _distributed_wait_for_result(self):
+        self._start_local_check()
+        cc = _ConditionChecker(self, self.streams_connection, self.submission_result)
         self.result = cc._complete()
-        self.result['submission_result'] = sjr
+        self.result['submission_result'] = self.submission_result
+        if self.local_check is not None:
+            self._local_thread.join()
+        cc._canceljob(self.result)
+        if self.local_check_exception is not None:
+            raise self.local_check_exception
         return self.result['passed']
 
+    def _start_local_check(self):
+        self.local_check_exception = None
+        if self.local_check is None:
+            return
+        self._local_thread = threading.Thread(target=self._call_local_check)
+        self._local_thread.start()
+
+    def _call_local_check(self):
+        try:
+            self.local_check_value = self.local_check()
+        except Exception as e:
+            self.local_check_value = None
+            self.local_check_exception = e
+
 class Condition(object):
+    """A condition for testing.
+
+    Args:
+        name(str): Condition name, must be unique within the tester.
+    """
     _METRIC_PREFIX = "streamsx.condition:"
 
     @staticmethod
@@ -246,13 +502,18 @@ class Condition(object):
         self.name = name
         self._valid = False
         self._fail = False
+
     @property
     def valid(self):
+        """Is the condition valid.
+
+        A subclass must set `valid` when the condition becomes valid.
+        """
         return self._valid
     @valid.setter
     def valid(self, v):
         if self._fail:
-           return None
+           return
         if self._valid != v:
             if v:
                 self._metric_valid.value = 1
@@ -262,6 +523,11 @@ class Condition(object):
         self._metric_seq += 1
 
     def fail(self):
+        """Fail the condition.
+
+        Marks the condition as failed. Once a condition has failed it
+        can never become valid, the test that uses the condition will fail.
+        """
         self._metric_fail.value = 1
         self.valid = False
         self._fail = True
@@ -311,6 +577,20 @@ class _TupleExactCount(Condition):
     def __str__(self):
         return "Exact tuple count: expected:" + str(self.target) + " received:" + str(self.count)
 
+class _TupleAtLeastCount(Condition):
+    def __init__(self, target, name=None):
+        super(_TupleAtLeastCount, self).__init__(name)
+        self.target = target
+        self.count = 0
+        if target == 0:
+            self.valid = True
+
+    def __call__(self, tuple):
+        self.count += 1
+        self.valid = self.count >= self.target
+
+    def __str__(self):
+        return "At least tuple count: expected:" + str(self.target) + " received:" + str(self.count)
 
 class _StreamContents(Condition):
     def __init__(self, expected, name=None):
@@ -352,13 +632,24 @@ class _UnorderedStreamContents(_StreamContents):
                 return True
         return False
 
+class _TupleCheck(Condition):
+    def __init__(self, checker, name=None):
+        super(_TupleCheck, self).__init__(name)
+        self.checker = checker
+
+    def __call__(self, tuple):
+        if not self.checker(tuple):
+            self.fail()
+        else:
+            # Will not override if already failed
+            self.valid = True
+
+    def __str__(self):
+        return "Tuple checker:" + str(self.checker)
+
 #######################################
 # Internal functions
 #######################################
-
-from streamsx.rest import StreamsConnection
-import time
-
 
 def _result_to_dict(passed, t):
     result = {}
@@ -374,7 +665,8 @@ class _ConditionChecker(object):
         self.tester = tester
         self._sc = sc
         self._sjr = sjr
-        self.job_id = job_id = sjr['jobId']
+        self._instance_id = sjr['instanceId']
+        self._job_id = sjr['jobId']
         self._sequences = {}
         for cn in tester._conditions:
             self._sequences[cn] = -1
@@ -404,9 +696,11 @@ class _ConditionChecker(object):
 
     def _end(self, passed, check):
         result = _result_to_dict(passed, check)
-        if self.job is not None:
-            self.job.cancel(force= not passed)
         return result
+
+    def _canceljob(self, result):
+        if self.job is not None:
+            self.job.cancel(force=not result['passed'])
 
     def __check_once(self):
         cms = self._get_job_metrics()
@@ -454,12 +748,8 @@ class _ConditionChecker(object):
         return (valid, fail, progress, condition_states)
 
     def _find_job(self):
-        for instance in self._sc.get_instances(id=self._sc.instance_id):
-            jobs = instance.get_jobs(id=self.job_id)
-            if len(jobs) == 1:
-                return jobs[0]
-            raise AssertionError("Job not found:job_id:", self.job_id)
-        raise AssertionError("Instance not found:", self._sc.instance_id)
+        instance = self._sc.get_instance(id=self._instance_id)
+        return instance.get_job(id=self._job_id)
 
     def _get_job_metrics(self):
         """Fetch all the condition metrics for a job.

@@ -10,6 +10,7 @@ import collections
 import logging
 
 from streamsx.topology import _debug
+import streamsx.topology._stdlib as _stdlib
 
 class _DependencyResolver(object):
     """
@@ -65,8 +66,12 @@ class _DependencyResolver(object):
 
         _debug.debug("add_dependencies:module=%s", module)
 
+        # If the module in which the class/function is defined is __main__, don't add it. Just add its dependencies.
+        if mn == "__main__":
+            self._processed_modules.add(module)
+
         # add the module as a dependency
-        if not self._add_dependency(module, mn):
+        elif not self._add_dependency(module, mn):
             _debug.debug("add_dependencies:not added:module=%s", mn)
             return None
 
@@ -135,7 +140,7 @@ class _DependencyResolver(object):
         """
         _debug.debug("_add_dependency:module=%s", mn)
 
-        if _is_streamsx_topology_module(module):
+        if _is_streamsx_module(module):
             _debug.debug("_add_dependency:streamsx module=%s", mn)
             return False
 
@@ -169,7 +174,7 @@ class _DependencyResolver(object):
         elif hasattr(module, '__file__'):
             # individual Python module
             module_path = os.path.abspath(module.__file__)
-            self._add_module(module_path)
+            self._modules.add(module_path)
             
         self._processed_modules.add(module)
         return True
@@ -179,10 +184,6 @@ class _DependencyResolver(object):
             return None
         self._packages[path] = None
     
-    def _add_module(self, path):
-        #print ("Adding external module", path)
-        self._modules.add(path)
-
 #####################
 # Utility functions #
 #####################
@@ -229,9 +230,25 @@ def _get_module_name(function):
     return module_name
 
 def _is_builtin_module(module):
-    return (not hasattr(module, '__file__')) or  module.__name__ in sys.builtin_module_names
+    """Is builtin or part of standard library
+    """
+    if (not hasattr(module, '__file__')) or  module.__name__ in sys.builtin_module_names:
+        return True
+    return module.__name__ in _stdlib._STD_LIB_MODULES
 
-def _is_streamsx_topology_module(module):
+def _is_streamsx_module(module):
     if hasattr(module, '__name__'):
-        return module.__name__.startswith('streamsx.')
+        mn = module.__name__
+        if not mn.startswith('streamsx.'):
+            return False
+        if mn.startswith('streamsx.topology'):
+            return True
+        if mn.startswith('streamsx.spl'):
+            return True
+        if mn.startswith('streamsx.rest'):
+            return True
+        if mn == 'streamsx.ec':
+            return True
+        if mn == 'streamsx.st':
+            return True
     return False

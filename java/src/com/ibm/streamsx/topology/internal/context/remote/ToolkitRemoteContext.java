@@ -9,15 +9,14 @@ import static com.ibm.streamsx.topology.context.ContextProperties.VMARGS;
 import static com.ibm.streamsx.topology.internal.context.remote.DeployKeys.DEPLOYMENT_CONFIG;
 import static com.ibm.streamsx.topology.internal.context.remote.DeployKeys.JOB_CONFIG_OVERLAYS;
 import static com.ibm.streamsx.topology.internal.context.remote.DeployKeys.deploy;
+import static com.ibm.streamsx.topology.internal.context.remote.DeployKeys.keepArtifacts;
 import static com.ibm.streamsx.topology.internal.core.InternalProperties.TOOLKITS_JSON;
 import static com.ibm.streamsx.topology.internal.graph.GraphKeys.CFG_STREAMS_VERSION;
-import static com.ibm.streamsx.topology.internal.graph.GraphKeys.NAME;
-import static com.ibm.streamsx.topology.internal.graph.GraphKeys.NAMESPACE;
 import static com.ibm.streamsx.topology.internal.graph.GraphKeys.splAppName;
 import static com.ibm.streamsx.topology.internal.graph.GraphKeys.splAppNamespace;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.addAll;
 import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.array;
 import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jboolean;
-import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jobject;
 import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jstring;
 import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.object;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -69,6 +68,16 @@ import com.ibm.streamsx.topology.internal.toolkit.info.ToolkitInfoModelType;
 
 public class ToolkitRemoteContext extends RemoteContextImpl<File> {
 
+	private final boolean keepToolkit;
+
+	public ToolkitRemoteContext() {
+        this.keepToolkit = false;
+    }
+	
+    public ToolkitRemoteContext(boolean keepToolkit) {
+        this.keepToolkit = keepToolkit;
+    }
+	
     @Override
     public Type getType() {
         return Type.TOOLKIT;
@@ -106,9 +115,10 @@ public class ToolkitRemoteContext extends RemoteContextImpl<File> {
         
         generateSPL(toolkitRoot, jsonGraph);
         
-        JsonObject results = new JsonObject();
-        results.addProperty(SubmissionResultsKeys.TOOLKIT_ROOT, toolkitRoot.getAbsolutePath());
-        submission.add(RemoteContext.SUBMISSION_RESULTS, results);
+        if (keepToolkit || keepArtifacts(submission)) {
+        	final JsonObject submissionResult = GsonUtilities.objectCreate(submission, RemoteContext.SUBMISSION_RESULTS);
+        	submissionResult.addProperty(SubmissionResultsKeys.TOOLKIT_ROOT, toolkitRoot.getAbsolutePath());
+        }
         
         setupJobConfigOverlays(deploy, jsonGraph);
 
@@ -127,8 +137,22 @@ public class ToolkitRemoteContext extends RemoteContextImpl<File> {
         }
         JsonObject jco = jcos.get(0).getAsJsonObject();
         
-        jco.add(DEPLOYMENT_CONFIG,
-                jobject(graph, "config").get(DEPLOYMENT_CONFIG));     
+        JsonObject graphDeployment = GsonUtilities.object(graph, "config", DEPLOYMENT_CONFIG);
+        
+        if (!jco.has(DEPLOYMENT_CONFIG)) {
+             jco.add(DEPLOYMENT_CONFIG, graphDeployment);
+             return;
+        }
+        
+        JsonObject deployment = object(jco, DEPLOYMENT_CONFIG);
+        
+        // Need to merge with the graph taking precedence.
+        addAll(deployment, graphDeployment);
+        
+        if ("legacy".equals(GsonUtilities.jstring(deployment, "fusionScheme "))) {
+            if (deployment.has("fusionTargetPeCount"))
+                deployment.remove("fusionTargetPeCount");
+        }
     }
 
     private void generateSPL(File toolkitRoot, JsonObject jsonGraph)
