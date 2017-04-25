@@ -1,0 +1,67 @@
+/* Additional includes go here */
+
+#include "splpy.h"
+#include "splpy_funcop.h"
+
+using namespace streamsx::topology;
+
+<%SPL::CodeGen::implementationPrologue($model);%>
+
+<% my $pywrapfunc='iterableSource'; %>
+
+// Constructor
+MY_OPERATOR::MY_OPERATOR() :
+    funcop_(NULL)
+{
+    funcop_ = new SplpyFuncOp(this, "<%=$pywrapfunc%>");
+}
+
+// Destructor
+MY_OPERATOR::~MY_OPERATOR() 
+{
+    delete funcop_;
+}
+
+// Notify port readiness
+void MY_OPERATOR::allPortsReady() 
+{
+  createThreads(1);
+}
+ 
+// Notify pending shutdown
+void MY_OPERATOR::prepareToShutdown() 
+{
+    funcop_->prepareToShutdown();
+}
+
+// Processing for source and threaded operators   
+void MY_OPERATOR::process(uint32_t idx)
+{
+  while(!getPE().getShutdownRequested()) {
+    
+    OPort0Type otuple;
+
+    { // start lock
+      SplpyGIL lock;
+      PyObject * pyReturnVar = PyObject_CallObject(funcop_->callable(), NULL);
+
+      if (pyReturnVar == NULL) {
+         throw SplpyGeneral::pythonException("source");
+      }
+ 
+      if (SplpyGeneral::isNone(pyReturnVar)) {
+        Py_DECREF(pyReturnVar);
+        break;
+      }
+
+      pySplValueFromPyObject(otuple.get___spl_po(), pyReturnVar);
+      Py_DECREF(pyReturnVar);
+
+    } // end lock
+
+    submit(otuple, 0);
+  }
+
+}
+
+<%SPL::CodeGen::implementationEpilogue($model);%>

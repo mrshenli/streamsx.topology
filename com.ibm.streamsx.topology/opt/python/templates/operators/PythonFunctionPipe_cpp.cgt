@@ -1,16 +1,12 @@
 /*
  * # Licensed Materials - Property of IBM
- * # Copyright IBM Corp. 2015  
+ * # Copyright IBM Corp. 2015,2016
  */
 
-#include <Python.h>
-#include <string>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <stdio.h>
-
 #include "splpy.h"
+#include "splpy_pyop.h"
+
+using namespace streamsx::topology;
 
 <%SPL::CodeGen::implementationPrologue($model);%>
 
@@ -18,7 +14,7 @@
  my $cmnDir = $model->getContext()->getToolkitDirectory()."/opt/.__splpy/common/";
 
  require "splpy_operator.pm";
- require $cmnDir."/splpy_python.pm";
+ require $cmnDir."/splpy.pm";
 
  my $module = splpy_Module();
  my $functionName = splpy_FunctionName();
@@ -50,56 +46,70 @@
 %>
 
 // Constructor
-MY_OPERATOR::MY_OPERATOR()
+MY_OPERATOR::MY_OPERATOR() :
+   pyop_(NULL),
+   pyInNames_(NULL),
+   pyOutNames_(NULL)
 {
+   PyObject * callable;
 @include  "../../opt/.__splpy/common/py_constructor.cgt"
+   
+   {
+      SplpyGIL lock;
+      pyOutNames_ = Splpy::pyAttributeNames(getOutputPortAt(0));
+
+     // Now create the wrapper function that converts
+     // other types returned by the user's function
+     // (e.g. dictionaries) to Python tuples as the
+     // decorated operators only handle tuples to
+     // simplify the generated code.
+     Py_INCREF(pyOutNames_); // callFunction steals the reference
+     callable = SplpyGeneral::callFunction(
+             "streamsx.spl.runtime", "_splpy_to_tuples",
+             callable, pyOutNames_);   
+
+<% if ($paramStyle eq 'dictionary') { %>
+      pyInNames_ = Splpy::pyAttributeNames(
+               getInputPortAt(0));
+<% } %>
+   }
+
+   pyop_->setCallable(callable);
 }
 
 // Destructor
 MY_OPERATOR::~MY_OPERATOR() 
 {
+   {
+   SplpyGIL lock;
+   if (pyInNames_)
+      Py_DECREF(pyInNames_);
+   if (pyOutNames_)
+      Py_DECREF(pyOutNames_);
+    }
+
+   delete pyop_;
 }
 
-// Notify port readiness
-void MY_OPERATOR::allPortsReady() 
-{
-}
- 
 // Notify pending shutdown
 void MY_OPERATOR::prepareToShutdown() 
 {
+    pyop_->prepareToShutdown();
 }
 
-// Processing for source and threaded operators   
-void MY_OPERATOR::process(uint32_t idx)
-{
-}
-
-// Tuple processing for mutating ports 
-void MY_OPERATOR::process(Tuple & tuple, uint32_t port)
-{
-}
+<%
+  my $no_tuples_action = "";
+%>
 
 // Tuple processing for non-mutating ports
 void MY_OPERATOR::process(Tuple const & tuple, uint32_t port)
 {
-   IPort0Type const & <%=$ituple%> = static_cast<IPort0Type const &>(tuple);
-
    std::vector<OPort0Type> output_tuples;  
    {
-    streamsx::topology::PyGILLock lock;
-<%
-    if ($paramStyle eq 'tuple') {
-%>
+    // Don't hold the lock across submission
+    SplpyGIL lock;
 
-    PyObject * pyTuple = PyTuple_New(<%=$inputAttrs2Py%>); 
-    PyObject *pyValue;
-<%
-     for (my $i = 0; $i < $inputAttrs2Py; ++$i) {
-         print convertToPythonValueAsTuple($ituple, $i, $itypes[$i], $inames[$i]);
-     }
-    }
-%>
+ @include  "../../opt/.__splpy/common/py_splTupleToFunctionArgs.cgt"
 
  @include  "../../opt/.__splpy/common/py_functionReturnToTuples.cgt"
    
@@ -108,9 +118,13 @@ void MY_OPERATOR::process(Tuple const & tuple, uint32_t port)
    submit(output_tuples[i], 0);   
 }
 
+// Create member function that converts Python tuple to SPL tuple
+@include  "../../opt/.__splpy/common/py_pyTupleTosplTuple.cgt"
+
 // Punctuation processing
 void MY_OPERATOR::process(Punctuation const & punct, uint32_t port)
 {
+    forwardWindowPunctuation(punct);
 }
 
 <%SPL::CodeGen::implementationEpilogue($model);%>

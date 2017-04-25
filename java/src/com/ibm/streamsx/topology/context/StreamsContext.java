@@ -9,6 +9,7 @@ import java.util.concurrent.Future;
 
 import com.ibm.json.java.JSONObject;
 import com.ibm.streamsx.topology.Topology;
+import com.ibm.streamsx.topology.context.remote.RemoteContext;
 
 /**
  * A {@code StreamsContext} provides the ability to turn
@@ -39,39 +40,75 @@ public interface StreamsContext<T> {
         /**
          * Execution of the topology produces the application as a Streams
          * toolkit.
-         * 
+         * <P>
+         * The returned type for the {@code submit} calls is
+         * a {@code Future&lt;File>} where the value is
+         * the location of the toolkit.
+         * <BR>
+         * The {@code Future} returned from {@code submit()} will
+         * always be complete when the {@code submit()} returns.
+         * </P>
          */
         TOOLKIT,
         
         /**
-         * Execution of the topology produces the application as a zipped
-         * Streams toolkit.
-         * 
+         * Execution of the topology produces the application a
+         * Streams build archive.
+         * <P>
+         * The returned type for the {@code submit} calls is
+         * a {@code Future&lt;File>} where the value is
+         * the location of the build archive.
+         * <BR>
+         * The {@code Future} returned from {@code submit()} will
+         * always be complete when the {@code submit()} returns.
+         * </P>
          */
-        ZIPPED_TOOLKIT,
+        BUILD_ARCHIVE,
 
         /**
-         * Execution of the topology produces an SPL application bundle
-         * {@code .sab} file that can be submitted to an IBM Streams
-         * instances as a distributed application. The bundle is self-contained
-         * and 
+         * Submission of the topology produces an Streams application bundle.
+         * <P>
+         * A bundle ({@code .sab} file) can be submitted to a Streaming Analytics
+         * service running on IBM Bluemix using:
+         * <UL>
+         * <LI> Streaming Analytics Console</LI>
+         * <LI> Streaming Analytics REST API </LI>
+         * </UL>
+         * <BR>
+         * The {@link #ANALYTICS_SERVICE} context submits a topology directly to a
+         * Streaming Analytics service.
+         * </P>
          * <P>
          * A bundle ({@code .sab} file) can be submitted to an IBM Streams
          * instance using:
          * <UL>
          * <LI> {@code streamtool submitjob} from the command line</LI>
          * <LI> IBM Streams Console</LI>
-         * <LI> IBM Streams JMX api </LI>
+         * <LI> IBM Streams JMX API </LI>
          * </UL>
          * <BR>
-         * Using the {@link #DISTRIBUTED} context allows the topology to
-         * be submitted directly to a Streams instance.
+         * The {@link #DISTRIBUTED} context submits a topology directly to a Streams instance.
          * </P>
          * <P>
          * The returned type for the {@code submit} calls is
-         * a {@code Future&lt;File>} where the value is
+         * a {@code Future<File>} where the value is
          * the location of the bundle.
          * <BR>
+         * If running with IBM Streams 4.2 or later then additionally a
+         * <a href="https://www.ibm.com/support/knowledgecenter/SSCRJU_4.2.0/com.ibm.streams.admin.doc/doc/job_configuration_overlays.html">job configuration overlays</a>
+         * file is produced. This file provides the correct job deployment instructions
+         * to enforce any constraints declared in the {@code Topology}. The file is located
+         * in the same directory as the application bundle with a suffix of {@code json} and
+         * the name of the application bundle file (without the {@code sab} suffix} with {@code _JobConfig}
+         * appended. For example for the application bundle {@code simple.HelloWorld.sab}
+         * its job configuration overlays file would be {@code simple.HelloWorld_JobConfig.json}.
+         * <BR>
+         * <pre>
+         * Example of using job configuration overlays file at submit job time with {@code streamtool}:
+         * <code>
+         * streamtool submitjob --jobConfig simple.HelloWorld_JobConfig.json simple.HelloWorld.sab
+         * </code>
+         * </pre>
          * The {@code Future} returned from {@code submit()} will
          * always be complete when the {@code submit()} returns.
          * </P>
@@ -164,8 +201,9 @@ public interface StreamsContext<T> {
         
         /**
          * The topology is submitted to a Streams instance running
-         * in Streaming Analytics Service on
-         * <a href="http://www.ibm.com/Bluemix‎" target="_blank">IBM Bluemix</a>.
+         * in Streaming Analytics service on
+         * <a href="http://www.ibm.com/Bluemix‎" target="_blank">IBM Bluemix</a>
+         * cloud platform.
          * <P>
          * The returned type for the {@code submit} calls is
          * a {@code Future&lt;BigInteger>} where the value is
@@ -187,6 +225,18 @@ public interface StreamsContext<T> {
          * </P>
          */
         ANALYTICS_SERVICE,
+        
+        /**
+         * The topology is submitted to a Streams instance running
+         * in Streaming Analytics service on
+         * <a href="http://www.ibm.com/Bluemix‎" target="_blank">IBM Bluemix</a>
+         * cloud platform.
+         * 
+         * <P>
+         * This is a synonym for {@link #ANALYTICS_SERVICE}.
+         * </P>
+         */
+        STREAMING_ANALYTICS_SERVICE,
         ;
     }
 
@@ -246,7 +296,9 @@ public interface StreamsContext<T> {
      */
     Future<T> submit(JSONObject submission) throws Exception;
     
-    String SUBMISSION_DEPLOY = "deploy";
-    String SUBMISSION_GRAPH = "graph";
+    String SUBMISSION_DEPLOY = RemoteContext.SUBMISSION_DEPLOY;
+    String SUBMISSION_GRAPH = RemoteContext.SUBMISSION_GRAPH;
+    String SUBMISSION_RESULTS = RemoteContext.SUBMISSION_RESULTS;
+    String SUBMISSION_RESULTS_FILE = RemoteContext.SUBMISSION_RESULTS_FILE;
     
 }

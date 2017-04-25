@@ -4,59 +4,15 @@
  */
 package com.ibm.streamsx.topology.builder;
 
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.CONFIG;
+
 import com.ibm.json.java.JSONObject;
-import com.ibm.json.java.OrderedJSONObject;
 
 /**
  * Utility methods for an operator represented as a JSON Object.
  *
  */
 public class JOperator {
-    
-    /**
-     * Programming model used to create the operator.
-     */
-    public static final String MODEL = "model";
-    
-    /**
-     * Language for the operator within its {@link #MODEL}.
-     */
-    public static final String LANGUAGE = "language";
-    
-    public static final String MODEL_FUNCTIONAL = "functional";
-    public static final String MODEL_SPL = "spl";
-    
-    public static final String LANGUAGE_JAVA = "java";
-    public static final String LANGUAGE_CPP = "cpp";
-    public static final String LANGUAGE_PYTHON = "python";
-    public static final Object LANGUAGE_SPL = "spl";
-      
-    /**
-     * JSON attribute for operator configuration.
-     */
-    public static final String CONFIG = "config"; 
-    
-    /**
-     * Attribute for isolation region identifier.
-     */
-    public static final String PLACEMENT_ISOLATE_REGION_ID = "isolateRegion";
-
-    /**
-     * Attribute for an explicit colocation identifier.
-     */
-    public static final Object PLACEMENT_EXPLICIT_COLOCATE_ID = "explicitColocate";
-
-    /**
-     * Attribute for low latency region identifier.
-     */
-    public static final Object PLACEMENT_LOW_LATENCY_REGION_ID = "lowLatencyRegion";
-
-    /**
-     * Attribute for an resource tags, a list of tags.
-     */
-    public static final Object PLACEMENT_RESOURCE_TAGS = "resourceTags";
-
-
     
     /**
      * Get the config object, returning null if it has not been created.
@@ -77,7 +33,7 @@ public class JOperator {
     public static JSONObject createConfig(final JSONObject op) {
         JSONObject config = getConfig(op);
         if (config == null)
-            op.put(CONFIG, config = new OrderedJSONObject());
+            op.put(CONFIG, config = new JSONObject());
         
         return config;
     }
@@ -88,12 +44,7 @@ public class JOperator {
      *
      */
     public static class JOperatorConfig {
-        
-        /**
-         * Attribute for placement of the operator, a JSON object.
-         */
-        public static final String PLACEMENT = "placement";
-        
+       
         /**
          * Add a config value.
          * @param key Key within config
@@ -141,7 +92,7 @@ public class JOperator {
         public static JSONObject createJSONItem(final JSONObject op, String key) {
             JSONObject value = (JSONObject) getItem(op, key);
             if (value == null) {
-                createConfig(op).put(key, value = new OrderedJSONObject());
+                createConfig(op).put(key, value = new JSONObject());
             }
             
             return value;

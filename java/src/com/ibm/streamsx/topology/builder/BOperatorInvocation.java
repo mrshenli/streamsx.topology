@@ -4,6 +4,11 @@
  */
 package com.ibm.streamsx.topology.builder;
 
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.LANGUAGE_JAVA;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.MODEL_SPL;
+
 import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
@@ -11,13 +16,13 @@ import java.util.Map;
 
 import com.ibm.json.java.JSONArray;
 import com.ibm.json.java.JSONObject;
-import com.ibm.json.java.OrderedJSONObject;
 import com.ibm.streams.flow.declare.InputPortDeclaration;
 import com.ibm.streams.flow.declare.OperatorInvocation;
 import com.ibm.streams.flow.declare.OutputPortDeclaration;
 import com.ibm.streams.operator.Attribute;
 import com.ibm.streams.operator.Operator;
 import com.ibm.streams.operator.StreamSchema;
+import com.ibm.streams.operator.Type.MetaType;
 import com.ibm.streams.operator.model.Namespace;
 import com.ibm.streams.operator.model.PrimitiveOperator;
 import com.ibm.streamsx.topology.function.Supplier;
@@ -46,7 +51,7 @@ public class BOperatorInvocation extends BOperator {
     private final OperatorInvocation<? extends Operator> op;
     protected List<BInputPort> inputs;
     protected List<BOutputPort> outputs;
-    private final JSONObject jparams = new OrderedJSONObject();
+    private final JSONObject jparams = new JSONObject();
 
     public BOperatorInvocation(GraphBuilder bt,
             Class<? extends Operator> opClass,
@@ -58,8 +63,8 @@ public class BOperatorInvocation extends BOperator {
         json().put("parameters", jparams);
         
         if (!Operator.class.equals(opClass)) {   
-            json().put(JOperator.MODEL, JOperator.MODEL_SPL);
-            json().put(JOperator.LANGUAGE, JOperator.LANGUAGE_JAVA);
+            json().put(MODEL, MODEL_SPL);
+            json().put(LANGUAGE, LANGUAGE_JAVA);
             json().put("kind", getKind(opClass));
             json().put("kind.javaclass", opClass.getCanonicalName());
         }
@@ -80,8 +85,8 @@ public class BOperatorInvocation extends BOperator {
         json().put("parameters", jparams);
         
         if (!Operator.class.equals(opClass)) {   
-            json().put(JOperator.MODEL, JOperator.MODEL_SPL);
-            json().put(JOperator.LANGUAGE, JOperator.LANGUAGE_JAVA);
+            json().put(MODEL, MODEL_SPL);
+            json().put(LANGUAGE, LANGUAGE_JAVA);
             json().put("kind", getKind(opClass));
             json().put("kind.javaclass", opClass.getCanonicalName());
         }
@@ -165,18 +170,30 @@ public class BOperatorInvocation extends BOperator {
                 
         if (value instanceof String) {
             op.setStringParameter(name, (String) value);
+            if (jsonType == null)
+                jsonType = MetaType.RSTRING.name();
         } else if (value instanceof Byte) {
             op.setByteParameter(name, (Byte) value);
+            if (jsonType == null)
+                jsonType = MetaType.INT8.name();
         } else if (value instanceof Short) {
             op.setShortParameter(name, (Short) value);
+            if (jsonType == null)
+                jsonType = MetaType.INT16.name();
         } else if (value instanceof Integer) {
             op.setIntParameter(name, (Integer) value);
+            if (jsonType == null)
+                jsonType = MetaType.INT32.name();
         } else if (value instanceof Long) {
             op.setLongParameter(name, (Long) value);
+            if (jsonType == null)
+                jsonType = MetaType.INT64.name();
         } else if (value instanceof Float) {
             op.setFloatParameter(name, (Float) value);
+            jsonType = MetaType.FLOAT32.name();
         } else if (value instanceof Double) {
             op.setDoubleParameter(name, (Double) value);
+            jsonType = MetaType.FLOAT64.name();
         } else if (value instanceof Boolean) {
             op.setBooleanParameter(name, (Boolean) value);
         } else if (value instanceof BigDecimal) {

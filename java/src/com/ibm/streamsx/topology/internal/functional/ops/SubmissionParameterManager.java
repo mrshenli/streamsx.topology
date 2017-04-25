@@ -14,6 +14,7 @@ import com.ibm.streams.operator.OperatorContext;
 import com.ibm.streams.operator.Type.MetaType;
 import com.ibm.streamsx.topology.builder.GraphBuilder;
 import com.ibm.streamsx.topology.context.ContextProperties;
+import com.ibm.streamsx.topology.generator.functional.FunctionalOpProperties;
 import com.ibm.streamsx.topology.generator.spl.SubmissionTimeValue;
 
 import static com.ibm.streamsx.topology.builder.JParamTypes.TYPE_SUBMISSION_PARAMETER;
@@ -85,10 +86,10 @@ public class SubmissionParameterManager {
     
     /** The name of the functional operator's actual SPL parameter
      * for the submission parameters names */
-    public static final String NAME_SUBMISSION_PARAM_NAMES = "submissionParamNames";
+    public static final String NAME_SUBMISSION_PARAM_NAMES = FunctionalOpProperties.NAME_SUBMISSION_PARAM_NAMES;
     /** The name of the functional operator's actual SPL parameter
      * for the submission parameters values */
-    public static final String NAME_SUBMISSION_PARAM_VALUES = "submissionParamValues";
+    public static final String NAME_SUBMISSION_PARAM_VALUES = FunctionalOpProperties.NAME_SUBMISSION_PARAM_VALUES;
     
     /**
      * Initialize submission parameter value information
@@ -171,7 +172,7 @@ public class SubmissionParameterManager {
         // good to go. initialize params
         params = new HashMap<>();
         for (Map.Entry<String, String> e : allsp.entrySet()) {
-            params.put(SubmissionTimeValue.mkOpParamName(e.getKey()), e.getValue());
+            params.put(e.getKey(), e.getValue());
         }
         // System.out.println("SPM.initializeEmbedded() " + params);
     }
@@ -187,7 +188,7 @@ public class SubmissionParameterManager {
      *          may be null.
      */
     public static Object getValue(String spName, MetaType metaType) {
-        String value = params.get(SubmissionTimeValue.mkOpParamName(spName));
+        String value = params.get(spName);
         if (value == null) {
             // System.out.println("SPM.getValue "+spName+" "+metaType+ " params " + params);
             throw new IllegalArgumentException("Unexpected submission parameter name " + spName);

@@ -3,7 +3,7 @@
         Common definitions for streamsx.topology
     </description>
 
-  <property name="streamsx.topology.version" value="1.2"/>
+  <property name="streamsx.topology.version" value="1.6"/>
 
   <dirname property="streamsx.topology" file="${ant.file.streamsx.topology.common}"/>
 
@@ -14,7 +14,8 @@
   <property name="tk" location="${streamsx.topology}/${tk.name}"/>
   <property name="tk.opt" location="${tk}/opt"/>
   <property name="tk.lib" location="${tk}/lib"/>
-
+  <property name="tk.doc" location="${tk}/doc"/>
+   
   <!-- Default to the junit in $HOME/.ant/lib -->
   <!-- Can be overridden with the -Djunit.jar=some_path when building -->
   <fileset  id="junit.path" dir="${user.home}/.ant/lib" includes="junit-*.jar" erroronmissingdir="no"/>
@@ -24,6 +25,12 @@
   <property name="ant.build.javac.target" value="8"/>
 
   <property name="topology.test.root" location="${streamsx.topology}/test"/>
+  <property name="topology.test.python" value="python3"/>
+
+  <exec executable="${topology.test.python}-config"
+       outputproperty="topology.test.python.prefix">
+       <arg value="--prefix"/>
+  </exec>
 
   <!-- Use the full class path as scalac doesn't seem to always pick
        up jars theough the manifest, even if -usemanifestcp is set -->
@@ -37,10 +44,19 @@
            <include name="*.jar" />
         </fileset>
   </path>
+  <path id="gson.classpath">
+    <pathelement location="${tk.opt}/gson-2.3.1/gson-2.3.1.jar" />
+  </path>
+
+  <path id="compress.classpath">
+    <pathelement location="${tk.opt}/apache-commons/commons-compress-1.7.jar"/>
+  </path>
+
   <path id="tk.classpath">
     <pathelement location="${tk.opt}/apache-mina-2.0.2/dist/mina-core-2.0.2.jar" />
-    <pathelement location="${tk.opt}/gson-2.3.1/gson-2.3.1.jar" />
+    <path refid="gson.classpath" />
     <path refid="httpclient.classpath" />
+    <path refid="compress.classpath" />
   </path>
 
   <target name="checkJava8">

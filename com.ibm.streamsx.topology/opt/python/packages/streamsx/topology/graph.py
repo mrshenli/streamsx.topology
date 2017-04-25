@@ -1,24 +1,63 @@
+# coding=utf-8
 # Licensed Materials - Property of IBM
-# Copyright IBM Corp. 2015
+# Copyright IBM Corp. 2015,2016
 
+import sys
 import uuid
 import json
 import inspect
 import pickle
+
+try:
+    import dill
+    dill.settings['recurse'] = True
+except ImportError:
+    dill = pickle
+
+import types
 import base64
+import re
 import streamsx.topology.dependency
+import streamsx.topology.functions
 import streamsx.topology.param
 from streamsx.topology.schema import CommonSchema
+from streamsx.topology.schema import _stream_schema
+
+def _fix_namespace(ns):
+    ns = str(ns)
+    sns = ns.split('.')
+    if len(sns) == 1:
+        return re.sub(r'\W+', '', ns)
+    for i in range(0,len(sns)):
+        sns[i] = re.sub(r'\W+', '', sns[i])
+
+    for i in range(len(sns), 0):
+        if len(sns[i]) == 0:
+            sns.pop(i)
+
+    return '.'.join(sns)
+
 
 class SPLGraph(object):
 
-    def __init__(self, name=None):
+    def __init__(self, topology, name=None, namespace=None):
         if name is None:
             name = str(uuid.uuid1()).replace("-", "")
-        self.name = name
+
+        if namespace is None:
+            namespace = name
+        
+        # Allows Topology or SPLGraph to be passed to submit
+        self.graph = self
+        # Remove 'awkward characters' from names
+        self.name = re.sub(r'\W+', '', str(name))
+        self.namespace = _fix_namespace(namespace)
+        self.topology = topology
         self.operators = []
-        self.resolver = streamsx.topology.dependency._DependencyResolver()
+        self.resolver = streamsx.topology.dependency._DependencyResolver(self.topology)
         self._views = []
+        self._spl_toolkits = []
+        self._used_names = {'list', 'tuple', 'int'}
 
     def get_views(self):
         return self._views
@@ -26,42 +65,82 @@ class SPLGraph(object):
     def add_views(self, view):
         self._views.append(view)
 
-    def addOperator(self, kind, function=None, name=None, params=None):
+    def _requested_name(self, name, action=None, func=None):
+        """Create a unique name for an operator or a stream.
+        """
+        if name is not None:
+            if name in self._used_names:
+                # start at 2 for the "second" one of this name
+                n = 2
+                while True:
+                    pn = name + '_' + str(n)
+                    if pn not in self._used_names:
+                        self._used_names.add(pn)
+                        return pn
+                    n += 1
+            else:
+                self._used_names.add(name)
+                return name
+
+        if func is not None:
+            if hasattr(func, '__name__'):
+                name = func.__name__
+                if name == '<lambda>':
+                    # Avoid use of <> characters in name
+                    # as they are converted to unicode
+                    # escapes in SPL identifier
+                    name = action + '_lambda'
+            elif hasattr(func, '__class__'):
+                name = func.__class__.__name__
+
+        if name is None:
+            if action is not None:
+                name = action
+            else:
+                name = self.name
+
+        # Recurse once to get unique version of name
+        return self._requested_name(name)
+
+
+    def addOperator(self, kind, function=None, name=None, params=None, sl=None):
         if(params is None):
             params = {}
+
         if name is None:
-            if function is not None:
-               if hasattr(function, '__name__'):
-                   name = function.__name__ + "_" + str(len(self.operators))
-               elif hasattr(function, '__class__'):
-                   name = function.__class__.__name__ + "_" + str(len(self.operators))
-            else:
-               name = self.name + "_OP"+str(len(self.operators))
+            name = self._requested_name(None,action="Op", func = function)
+
         if(kind.startswith("$")):    
             op = Marker(len(self.operators), kind, name, {}, self)                           
         else:
             if function is not None:
                 params['toolkitDir'] = streamsx.topology.param.toolkit_dir()
-            op = SPLInvocation(len(self.operators), kind, function, name, params, self)
+            op = _SPLInvocation(len(self.operators), kind, function, name, params, self, sl=sl)
         self.operators.append(op)
         if not function is None:
-            if not inspect.isbuiltin(function):
-                self.resolver.add_dependencies(inspect.getmodule(function))
+            dep_instance = function
+            if isinstance(function, streamsx.topology.functions._IterableInstance):
+                dep_instance = type(function._it)
+
+            if not inspect.isbuiltin(dep_instance):
+                self.resolver.add_dependencies(inspect.getmodule(dep_instance))
         return op
     
     def addPassThruOperator(self):
         name = self.name + "_OP"+str(len(self.operators))
-        op = SPLInvocation(len(self.operators), "spl.relational::Functor", None, name, {}, self)
+        op = _SPLInvocation(len(self.operators), "spl.relational::Functor", None, name, {}, self)
         self.operators.append(op)
         return op
 
     def generateSPLGraph(self):
         _graph = {}
         _graph["name"] = self.name
-        _graph["namespace"] = self.name
+        _graph["namespace"] = self.namespace
         _graph["public"] = True
         _graph["config"] = {}
         _graph["config"]["includes"] = []
+        _graph['config']['spl'] = {}
+        _graph['config']['spl']['toolkits'] = self._spl_toolkits
         _ops = []
         self.addModules(_graph["config"]["includes"])
         self.addPackages(_graph["config"]["includes"])
@@ -84,16 +163,16 @@ class SPLGraph(object):
            mf["source"] = module_path
            mf["target"] = "opt/python/modules"
            includes.append(mf)
-           
+
     def getLastOperator(self):
         return self.operators[len(self.operators) -1]      
         
     def printJSON(self):
       print(json.dumps(self.generateSPLGraph(), sort_keys=True, indent=4, separators=(',', ': ')))
 
-class SPLInvocation(object):
+class _SPLInvocation(object):
 
-    def __init__(self, index, kind, function, name, params, graph, view_configs = None):
+    def __init__(self, index, kind, function, name, params, graph, view_configs = None, sl=None):
         self.index = index
         self.kind = kind
         self.function = function
@@ -102,6 +181,9 @@ class SPLInvocation(object):
         self.setParameters(params)
         self._addOperatorFunction(self.function)
         self.graph = graph
+        self.viewable = True
+        self.sl = sl
+        self._placement = {}
 
         if view_configs is None:
             self.view_configs = []
@@ -111,11 +193,13 @@ class SPLInvocation(object):
         self.inputPorts = []
         self.outputPorts = []
 
-    def addOutputPort(self, oWidth=None, name=None, inputPort=None, schema= CommonSchema.Python,partitioned=None):
+    def addOutputPort(self, oWidth=None, name=None, inputPort=None, schema= CommonSchema.Python,partitioned_keys=None):
         if name is None:
             name = self.name + "_OUT"+str(len(self.outputPorts))
-        oport = OPort(name, self, len(self.outputPorts), schema, oWidth, partitioned)
+        oport = OPort(name, self, len(self.outputPorts), schema, oWidth, partitioned_keys)
         self.outputPorts.append(oport)
+        if schema == CommonSchema.Python:
+            self.viewable = False
 
         if not inputPort is None:
             oport.connect(inputPort)
@@ -171,7 +255,10 @@ class SPLInvocation(object):
         _op["outputs"] = _outputs
         _op["inputs"] = _inputs
         _op["config"] = {}
+        _op["config"]["streamViewability"] = self.viewable
         _op["config"]["viewConfigs"] = self.view_configs
+        if self._placement:
+            _op["config"]["placement"] = self._placement
         _params = {}
         # Add parameters as their string representation
         # unless they value has a spl_json() function,
@@ -186,6 +273,14 @@ class SPLInvocation(object):
                 _value["value"] = param
                 _params[name] = _value
         _op["parameters"] = _params
+
+        if self.sl is not None:
+           _op['sourcelocation'] = self.sl.spl_json()
+
+        # Callout to allow a ExtensionOperator
+        # to augment the JSON
+        if hasattr(self, '_ex_op'):
+            self._ex_op._generate(_op)
         return _op
 
     def _addOperatorFunction(self, function):
@@ -193,19 +288,41 @@ class SPLInvocation(object):
             return None
         if not hasattr(function, "__call__"):
             raise "argument to _addOperatorFunction is not callable"
-                 
+
+        # Wrap a lambda as a callable class instance
+        if isinstance(function, types.LambdaType) and function.__name__ == "<lambda>" :
+            function = streamsx.topology.functions._Callable(function)
+        elif function.__module__ == '__main__':
+            # Function/Class defined in main, create a callable wrapping its
+            # dill'ed form
+            function = streamsx.topology.functions._Callable(function)
+         
         if inspect.isroutine(function):
             # callable is a function
             self.params["pyName"] = function.__name__
         else:
             # callable is a callable class instance
             self.params["pyName"] = function.__class__.__name__
-            # pickle format is binary; base64 encode so it is json serializable 
-            self.params["pyCallable"] = base64.b64encode(pickle.dumps(function)).decode("ascii")
+            # dill format is binary; base64 encode so it is json serializable 
+            self.params["pyCallable"] = base64.b64encode(dill.dumps(function)).decode("ascii")
 
         # note: functions in the __main__ module cannot be used as input to operations 
         # function.__module__ will be '__main__', so C++ operators cannot import the module
-        self.params["pyModule"] = function.__module__          
+        self.params["pyModule"] = function.__module__
+
+    def colocate(self, other, why):
+        """
+        Colocate this operator with another.
+        Only supports the case where topology inserts
+        an operator to fufill the required method.
+        """
+        if isinstance(self, Marker):
+            return
+        colocate_id = self._placement.get('explicitColocate')
+        if colocate_id is None:
+            colocate_id = '__spl_' + why + '_' + str(self.index)
+            self._placement['explicitColocate'] = colocate_id
+        other._placement['explicitColocate'] = colocate_id
 
     def _printOperator(self):
         print(self.name+":")
@@ -239,13 +356,14 @@ class IPort(object):
         return _iport
 
 class OPort(object):
-    def __init__(self, name, operator, index, schema, width=None, partitioned=None):
+    def __init__(self, name, operator, index, schema, width=None, partitioned_keys=None):
         self.name = name
         self.operator = operator
-        self.schema = schema
+        self.schema = _stream_schema(schema)
         self.index = index
         self.width = width
-        self.partitioned =  partitioned
+        self.partitioned = partitioned_keys is not None
+        self.partitioned_keys = partitioned_keys
 
         self.inputPorts = []
 
@@ -265,9 +383,11 @@ class OPort(object):
             _oport["width"] = int(self.width)
         if not self.partitioned is None:
             _oport["partitioned"] = self.partitioned
+        if self.partitioned_keys is not None:
+            _oport["partitionedKeys"] = self.partitioned_keys
         return _oport
 
-class Marker(SPLInvocation):
+class Marker(_SPLInvocation):
 
     def __init__(self, index, kind, name, params, graph):
         self.index = index

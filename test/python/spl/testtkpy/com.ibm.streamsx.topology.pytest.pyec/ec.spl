@@ -1,0 +1,16 @@
+namespace com.ibm.streamsx.topology.pytest.pyec;
+
+public composite TestOperatorContext(input I; output O) {
+   graph
+   stream<I> O = PyTestOperatorContext(I) {
+   param
+      domain_id: domainID();
+      instance_id: instanceID();
+      job_id: jobID();
+      pe_id: PEID();
+      channel: getChannel();
+      local_channel: getLocalChannel();
+      max_channels: getMaxChannels();
+      local_max_channels: getLocalMaxChannels();
+   }
+}

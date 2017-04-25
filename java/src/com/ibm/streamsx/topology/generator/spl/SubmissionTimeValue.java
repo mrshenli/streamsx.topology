@@ -4,26 +4,42 @@
  */
 package com.ibm.streamsx.topology.generator.spl;
 
-import static com.ibm.streamsx.topology.internal.functional.ops.FunctionFunctor.FUNCTIONAL_LOGIC_PARAM;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jboolean;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jobject;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jstring;
+import static com.ibm.streamsx.topology.builder.JParamTypes.TYPE_COMPOSITE_PARAMETER;
 import static com.ibm.streamsx.topology.builder.JParamTypes.TYPE_SUBMISSION_PARAMETER;
+import static com.ibm.streamsx.topology.generator.functional.FunctionalOpProperties.FUNCTIONAL_LOGIC_PARAM;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Map.Entry;
+import java.util.concurrent.atomic.AtomicBoolean;
 
-import com.ibm.json.java.JSONArray;
-import com.ibm.json.java.JSONObject;
-import com.ibm.json.java.OrderedJSONObject;
-import com.ibm.streams.operator.Type.MetaType;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonPrimitive;
+import com.ibm.streamsx.topology.builder.JParamTypes;
+import com.ibm.streamsx.topology.internal.gson.GsonUtilities;
 
 /**
  * A Submission Time Value is the SPL realization of a "Submission Parameter".
  */
 public class SubmissionTimeValue {
     private static final String OP_ATTR_SPL_SUBMISSION_PARAMS = "__spl_submissionParams";
-    /** map<spOpParamName,opParam> opParam has type TYPE_SUBMISSION_PARAMETER */
-    private final Map<String,JSONObject> allSubmissionParams;
+    
+    /** map<name,opParam> opParam has type TYPE_SUBMISSION_PARAMETER */
+    private final Map<String,JsonObject> allSubmissionParams = new HashMap<>();
+    
+    /**
+     * Map of submission value names to the composite parameter
+     * that represents them at the main composite level.
+     */
+    private final Map<String,JsonObject> submissionMainCompositeParams = new HashMap<>();
+    
+    
     /** map<opName,opJsonObject> */
-    private Map<String,JSONObject> functionalOps = new HashMap<>();
+    private Map<String,JsonObject> functionalOps = new HashMap<>();
     private ParamsInfo paramsInfo;
     
     /**
@@ -51,17 +67,17 @@ public class SubmissionTimeValue {
     }
     
     /**
-     * Create a json operator parameter name for the submission parameter name. 
+     * Create a composite parameter name for the submission parameter name. 
      * @param spName the submission parameter name
-     * @return the operator parameter name
+     * @return the composite parameter name
      */
-    public static String mkOpParamName(String spName) {
+    private static String mkCompositeParamName(String spName) {
         spName = spName.replace('.', '_');
-        return "__jaa_stv_" + SPLGenerator.getSPLCompatibleName(spName);
+        return "__spl_stv_" + SPLGenerator.getSPLCompatibleName(spName);
     }
 
-    SubmissionTimeValue(JSONObject graph) {
-        allSubmissionParams = getAllSubmissionParams(graph);
+    SubmissionTimeValue(JsonObject graph) {
+        createMainCompositeParamsForAllSubmissionValues(graph);
         paramsInfo = mkSubmissionParamsInfo();
     }
     
@@ -70,24 +86,113 @@ public class SubmissionTimeValue {
      * @param graph
      * @return {@code map<spOpParamName,spParam>}
      */
-    private Map<String,JSONObject> getAllSubmissionParams(JSONObject graph) {
-        Map<String,JSONObject> all = new HashMap<>();
-        JSONObject params = (JSONObject) graph.get("parameters");
+    private void createMainCompositeParamsForAllSubmissionValues(JsonObject graph) {
+        Map<String,JsonObject> all = this.allSubmissionParams;
+        
+        JsonObject params = GsonUtilities.jobject(graph, "parameters");
+        
         if (params != null) {
-            for (Object o : params.keySet()) {
-                String key = (String) o;
-                JSONObject param = (JSONObject) params.get(key);
-                if (TYPE_SUBMISSION_PARAMETER.equals(param.get("type"))) {
-                    JSONObject sp = (JSONObject) param.get("value");
-                    all.put(mkOpParamName((String)sp.get("name")), param);
+            for (Entry<String, JsonElement> e : params.entrySet()) {
+                JsonObject param = e.getValue().getAsJsonObject();
+                if (TYPE_SUBMISSION_PARAMETER.equals(jstring(param, "type"))) {
+                    JsonObject sp = jobject(param, "value");
+                    all.put(jstring(sp, "name"), param);                  
                 }
             }
         }
-        return all;
+        
+        for (JsonObject param : all.values())
+            addMainCompositeParam(params, param);
+    }
+    
+    /**
+     * Create a main composite to represent a submission parameter.
+     * 
+     * A parameter with name width,  type int32 default 3 is mapped to in the main composite:
+     * 
+     * expression<int32> $__spl_stv_width : (int32) getSubmissionTimeValue("width", "3");
+     * 
+     */
+    private void addMainCompositeParam(JsonObject params, JsonObject param) {
+       
+        JsonObject spv = jobject(param, "value");
+        String spname = jstring(spv, "name");
+        String metaType = jstring(spv, "metaType");
+        String cpname  = mkCompositeParamName(spname);
+        
+        JsonObject cp = new JsonObject();
+        cp.addProperty("type", TYPE_COMPOSITE_PARAMETER);
+        
+        JsonObject cpv = new JsonObject();
+        cpv.addProperty("name", cpname);
+        cpv.addProperty("metaType", metaType);
+        
+        String splspname = SPLGenerator.stringLiteral(spname);
+        String splType = Types.metaTypeToSPL(metaType);
+        
+        String cpdv;
+        if (!spv.has("defaultValue")) {
+            cpdv = String.format("(%s) getSubmissionTimeValue(%s)", splType, splspname);
+        } else {
+            JsonPrimitive defaultValueJson = spv.get("defaultValue").getAsJsonPrimitive();
+            String defaultValue;
+            
+            if (metaType.startsWith("UINT")) {
+                StringBuilder sbunsigned = new StringBuilder();
+                sbunsigned.append("(rstring) ");                
+                SPLGenerator.numberLiteral(sbunsigned, defaultValueJson, metaType);
+                defaultValue = sbunsigned.toString();
+            } else {
+                defaultValue = SPLGenerator.stringLiteral(defaultValueJson.getAsString());
+            }         
+            
+            cpdv = String.format("(%s) getSubmissionTimeValue(%s, %s)", splType, splspname, defaultValue);
+        }
+        cpv.addProperty("defaultValue", cpdv);
+        
+        cp.add("value", cpv);
+        
+        params.add(cpname, cp);
+        submissionMainCompositeParams.put(spname, cp);
+    }
+    
+    /**
+     * Create a inner composite to access a submission parameter defined in
+     * a main composite..
+     * 
+     * A parameter with name width,  type int32 default 3 is mapped to in the main composite:
+     * 
+     * expression<int32> $__spl_stv_width;
+     * 
+     */
+    private void addInnerCompositeParameter(JsonObject params, JsonObject param) {
+        
+        assert TYPE_SUBMISSION_PARAMETER.equals(jstring(param, "type"));
+        
+        JsonObject spv = jobject(param, "value");
+        String spname = jstring(spv, "name");
+        String metaType = jstring(spv, "metaType");
+        String cpname  = mkCompositeParamName(spname);
+        
+        if (params.has(cpname))
+            return;
+              
+        JsonObject cp = new JsonObject();
+        cp.addProperty("type", TYPE_COMPOSITE_PARAMETER);
+        
+        JsonObject cpv = new JsonObject();
+        cpv.addProperty("name", cpname);
+        cpv.addProperty("metaType", metaType);
+        
+        cp.add("value", cpv);
+        
+        params.add(cpname, cp);       
     }
     
     /**
      * Create a ParamsInfo for the topology's submission parameters.
+     * This is how submission parameter values are passed into
+     * a functional operator.
      * @return the parameter info. null if no submission parameters.
      */
     private ParamsInfo mkSubmissionParamsInfo() {
@@ -98,18 +203,18 @@ public class SubmissionTimeValue {
         StringBuilder valuesSb = new StringBuilder();
         
         boolean first = true;
-        for (Object key : allSubmissionParams.keySet()) {
-            String opParamName = (String) key;
-            JSONObject spParam = (JSONObject) allSubmissionParams.get(opParamName);
-            JSONObject spval = (JSONObject) spParam.get("value");
+        for (String opParamName : allSubmissionParams.keySet()) {
+            JsonObject spParam = allSubmissionParams.get(opParamName);
+            JsonObject spval = jobject(spParam, "value");
+            String name = jstring(spval, "name");
             if (first)
                 first = false;
             else {
                 namesSb.append(", ");
                 valuesSb.append(", ");
             }
-            namesSb.append(SPLGenerator.stringLiteral(opParamName));
-            valuesSb.append("(rstring) ").append(generateCompParamName(spval));
+            namesSb.append(SPLGenerator.stringLiteral(name));
+            valuesSb.append("(rstring) ").append(generateCompositeParamReference(spval));
         }
 
         return new ParamsInfo(namesSb.toString(), valuesSb.toString());
@@ -130,8 +235,8 @@ public class SubmissionTimeValue {
      * 
      * @param composite the composite definition
      */
-    @SuppressWarnings("unchecked")
-    void addJsonParamDefs(JSONObject composite) {
+
+    void addJsonParamDefs(JsonObject composite) {
         // scan immediate children ops for submission param use
         // and add corresponding param definitions to the composite.
         // Also, if the op has functional logic, enrich the op too...
@@ -141,87 +246,113 @@ public class SubmissionTimeValue {
             return;
         
         // scan for spParams
-        JSONObject spParams = new JSONObject();
-        boolean addedAll = false;
-        JSONArray operators = (JSONArray) composite.get("operators");
-        for (Object op : operators) {
-            JSONObject jop = (JSONObject)op;
-            JSONObject params = (JSONObject) jop.get("parameters");
+        JsonObject spParams = new JsonObject();
+        AtomicBoolean addedAll = new AtomicBoolean();
+        GsonUtilities.objectArray(composite, "operators", op -> {
+            JsonObject params = jobject(op, "parameters");
             if (params != null) {
                 boolean addAll = false;
-                for (Object pname : params.keySet()) {
+                for (Entry<String, JsonElement> p : params.entrySet()) {
                     // if functional logic add "submissionParameters" param
-                    if (params.get(FUNCTIONAL_LOGIC_PARAM) != null) {
-                        functionalOps.put((String)jop.get("name"), jop);
+                    if (params.has(FUNCTIONAL_LOGIC_PARAM)) {
+                        functionalOps.put(jstring(op, "name"), op);
                         addAll = true;
+                        break;
                     }
                     else {
-                        JSONObject param = (JSONObject) params.get(pname);
-                        String type = (String) param.get("type");
+                        JsonObject param = p.getValue().getAsJsonObject();
+                        String type = jstring(param, "type");
                         if (TYPE_SUBMISSION_PARAMETER.equals(type)) {
-                            JSONObject spval = (JSONObject) param.get("value");
-                            pname = mkOpParamName((String)spval.get("name"));
-                            spParams.put(pname, param);
+                            addInnerCompositeParameter(spParams, param);
                         }
                     }
                 }
-                if (addAll && !addedAll) {
-                    spParams.putAll(allSubmissionParams);
-                    addedAll = true;
-                }
-            }
-            Boolean isParallel = (Boolean) jop.get("parallelOperator"); 
-            if (isParallel != null && isParallel) {
-                Object width = jop.get("width");
-                if (width instanceof JSONObject) {
-                    JSONObject jwidth = (JSONObject)width; 
-                    Object type = jwidth.get("type");
-                    if (TYPE_SUBMISSION_PARAMETER.equals(type)) {
-                        JSONObject spval = (JSONObject) jwidth.get("value");
-                        String pname = mkOpParamName((String)spval.get("name")); 
-                        spParams.put(pname, jwidth);
+                if (addAll && !addedAll.getAndSet(true)) {
+                    for (String name : allSubmissionParams.keySet()) {
+                        addInnerCompositeParameter(spParams, allSubmissionParams.get(name));
                     }
                 }
             }
-        }
+            boolean isParallel = jboolean(op, "parallelOperator"); 
+            if (isParallel) {
+                JsonElement width = op.get("width");
+                if (width.isJsonObject()) {
+                    JsonObject jwidth = width.getAsJsonObject(); 
+                    String type = jstring(jwidth, "type");
+                    if (TYPE_SUBMISSION_PARAMETER.equals(type)) {
+                        addInnerCompositeParameter(spParams, jwidth);
+                    }
+                }
+            }
+        });
         
         // augment the composite's parameters
-        JSONObject params = (JSONObject) composite.get("parameters");
-        if (params == null && spParams.size() > 0) {
-            params = new OrderedJSONObject();
-            composite.put("parameters", params);
+        JsonObject params = jobject(composite, "parameters");
+        if (params == null && !GsonUtilities.jisEmpty(spParams)) {
+            params = new JsonObject();
+            composite.add("parameters", params);
         }
-        for (Object pname : spParams.keySet()) {
-            if (!params.keySet().contains(pname))
-                params.put(pname, spParams.get(pname));
+        for (Entry<String, JsonElement> p : spParams.entrySet()) {
+            String pname = p.getKey();
+            if (!params.has(pname))
+                params.add(pname, spParams.get(pname));
         }
         
         // make the results of our efforts available to addJsonInstanceParams
-        composite.put(OP_ATTR_SPL_SUBMISSION_PARAMS, spParams);
+        composite.add(OP_ATTR_SPL_SUBMISSION_PARAMS, spParams);
     }
 
     /**
      * Akin to addJsonParamDefs(), enrich the json composite operator instance's
-     * parameters with submission parameter references.
+     * invocation parameters with submission parameter references.
      * @param compInstance the composite instance
      * @param composite the composite definition
      */
-    void addJsonInstanceParams(JSONObject compInstance, JSONObject composite) {
-        JSONObject spParams = (JSONObject) composite.get(OP_ATTR_SPL_SUBMISSION_PARAMS);
+    void addJsonInstanceParams(JsonObject compInstance, JsonObject composite) {
+        JsonObject spParams = jobject(composite, OP_ATTR_SPL_SUBMISSION_PARAMS);
         if (spParams != null) {
-            JSONObject opParams = (JSONObject) compInstance.get("parameters");
+            JsonObject opParams = jobject(compInstance, "parameters");
             if (opParams == null) {
-                opParams = new JSONObject();
-                compInstance.put("parameters", opParams);
+                compInstance.add("parameters", opParams = new JsonObject());
             }
-            for (Object pname : spParams.keySet()) {
-                JSONObject spParam = (JSONObject) spParams.get(pname);
-                // need to end up generating: __jaa_stv_foo : $__jaa_stv_foo;
-                JSONObject spval = (JSONObject) spParam.get("value");
-                pname = mkOpParamName((String)spval.get("name")); 
-                opParams.put(pname, spParam);
+            for (Entry<String, JsonElement> p : spParams.entrySet()) {
+                JsonObject spParam = p.getValue().getAsJsonObject();
+                
+                // need to end up generating: __spl_stv_foo : $__spl_stv_foo;
+                opParams.add(p.getKey(), compositeParameterReference(spParam));
             }
         }
+    }
+    
+    /**
+     * Return a SPL expression that accesses
+     * a submission time value.
+     * @param name
+     * @return
+     */
+    JsonObject getSPLExpression(JsonObject param) {
+        assert jstring(param, "type").equals(TYPE_SUBMISSION_PARAMETER);
+        
+        String name = jstring(jobject(param, "value"), "name");
+        
+        return compositeParameterReference(submissionMainCompositeParams.get(name));
+    }
+    
+    /**
+     * Create an SPL expression that is a reference to a
+     * composite parameter.
+     */
+    private static JsonObject compositeParameterReference(JsonObject compParam) {
+        
+        assert jstring(compParam, "type").equals(TYPE_COMPOSITE_PARAMETER);
+       
+        JsonObject spval = jobject(compParam, "value");
+        String name = jstring(spval, "name");
+        
+        JsonObject ref = new JsonObject();
+        ref.addProperty("type", JParamTypes.TYPE_SPL_EXPRESSION);
+        ref.addProperty("value", "$" + name);
+        return ref;
     }
     
 //    /** Get the graph's submission parameters in the form of a
@@ -244,7 +375,7 @@ public class SubmissionTimeValue {
     /** Get the list of functional ops learned by {@link #addJsonParamDefs(JSONObject)}.
      * @return the collection of functional ops map<opName, opJsonObject>
      */
-    Map<String,JSONObject> getFunctionalOps() {
+    Map<String,JsonObject> getFunctionalOps() {
         return functionalOps;
     }
     
@@ -260,19 +391,28 @@ public class SubmissionTimeValue {
      * @param spval JSONObject for the submission parameter's value
      * @param sb
      */
-    void generateMainDef(JSONObject spval, StringBuilder sb) {
-        String paramName = generateCompParamName(spval);
-        String spName = SPLGenerator.stringLiteral((String) spval.get("name"));
-        String metaType = (String) spval.get("metaType");
-        String splType = MetaType.valueOf(metaType).getLanguageType();
-        Object defaultValue = spval.get("defaultValue");
+    void generateMainDef(JsonObject spval, StringBuilder sb) {
+        String paramName = generateCompositeParamReference(spval);
+        String spName = SPLGenerator.stringLiteral(jstring(spval, "name"));
+        String metaType = jstring(spval, "metaType");
+        String splType = Types.metaTypeToSPL(metaType);
+        
         sb.append(String.format("expression<%s> %s : ", splType, paramName));
-        if (defaultValue == null)
+        if (!spval.has("defaultValue")) {
             sb.append(String.format("(%s) getSubmissionTimeValue(%s)", splType, spName));
-        else {
-            if (metaType.startsWith("UINT"))
-                defaultValue = SPLGenerator.unsignedString(defaultValue);
-            defaultValue = SPLGenerator.stringLiteral(defaultValue.toString());
+        } else {
+            JsonPrimitive defaultValueJson = spval.get("defaultValue").getAsJsonPrimitive();
+            String defaultValue;
+            
+            if (metaType.startsWith("UINT")) {
+                StringBuilder sbunsigned = new StringBuilder();
+                sbunsigned.append("(rstring) ");                
+                SPLGenerator.numberLiteral(sbunsigned, defaultValueJson, metaType);
+                defaultValue = sbunsigned.toString();
+            } else {
+                defaultValue = SPLGenerator.stringLiteral(defaultValueJson.getAsString());
+            }         
+            
             sb.append(String.format("(%s) getSubmissionTimeValue(%s, %s)", splType, spName, defaultValue));
         }
     }
@@ -289,10 +429,10 @@ public class SubmissionTimeValue {
      * @param spval JSONObject for the submission parameter's value
      * @param sb
      */
-    void generateInnerDef(JSONObject spval, StringBuilder sb) {
-        String paramName = generateCompParamName(spval);
-        String metaType = (String) spval.get("metaType");
-        String splType = MetaType.valueOf(metaType).getLanguageType();
+    void generateInnerDef(JsonObject spval, StringBuilder sb) {
+        String paramName = generateCompositeParamReference(spval);
+        String metaType = jstring(spval, "metaType");
+        String splType = Types.metaTypeToSPL(metaType);
         sb.append(String.format("expression<%s> %s", splType, paramName));
     }
     
@@ -309,8 +449,8 @@ public class SubmissionTimeValue {
      * @param spval JSONObject for the submission parameter's value
      * @return the name
      */
-    String generateCompParamName(JSONObject spval) {
-        return "$" + mkOpParamName((String)spval.get("name"));
+    static String generateCompositeParamReference(JsonObject spval) {
+        return "$" + mkCompositeParamName(spval.get("name").getAsString());
     }
 
 }

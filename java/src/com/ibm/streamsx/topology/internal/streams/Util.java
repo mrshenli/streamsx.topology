@@ -4,11 +4,14 @@
  */
 package com.ibm.streamsx.topology.internal.streams;
 
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jstring;
+
 import java.io.File;
 import java.io.IOException;
 import java.util.List;
 import java.util.Map;
 
+import com.google.gson.JsonObject;
 import com.ibm.json.java.JSONObject;
 
 public class Util {
@@ -53,6 +56,12 @@ public class Util {
             return getStreamsInstall();
         
         return verifyStreamsInstall(deployConfig.get(installKey).toString());
+    }
+    public static String getStreamsInstall(JsonObject deploy, String installKey) {
+        if (!deploy.has(installKey))
+            return getStreamsInstall();
+        
+        return verifyStreamsInstall(jstring(deploy, installKey));
     }
     
     /**
@@ -113,5 +122,4 @@ public class Util {
         }
         return cmdsb.toString();
     }
-
 }

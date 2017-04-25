@@ -4,27 +4,31 @@
 */
 package com.ibm.streamsx.topology.internal.core;
 
+import static com.ibm.streamsx.topology.builder.BVirtualMarker.ISOLATE;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.PLACEMENT;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.PLACEMENT_EXPLICIT_COLOCATE_ID;
+import static com.ibm.streamsx.topology.generator.operator.OpProperties.PLACEMENT_RESOURCE_TAGS;
+import static com.ibm.streamsx.topology.internal.gson.GsonUtilities.jstring;
+
 import java.lang.ref.WeakReference;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.WeakHashMap;
 
-import static com.ibm.streamsx.topology.builder.BVirtualMarker.ISOLATE;
-
+import com.google.gson.JsonObject;
 import com.ibm.json.java.JSONArray;
 import com.ibm.json.java.JSONObject;
 import com.ibm.streamsx.topology.Topology;
 import com.ibm.streamsx.topology.TopologyElement;
 import com.ibm.streamsx.topology.builder.BOperatorInvocation;
-import com.ibm.streamsx.topology.builder.JOperator;
 import com.ibm.streamsx.topology.builder.JOperator.JOperatorConfig;
 import com.ibm.streamsx.topology.context.Placeable;
 import com.ibm.streamsx.topology.generator.spl.GraphUtilities;
+import com.ibm.streamsx.topology.internal.json4j.JSON4JUtilities;
 
 /**
  * Manages fusing of Placeables. 
@@ -118,19 +122,19 @@ class PlacementInfo {
     private void disallowColocateIsolatedOpWithParent(Placeable<?> first, Placeable<?> ... toFuse) {
         JSONObject graph = first.builder().complete();
         JSONObject colocateOp = first.operator().complete();
-        List<JSONObject> parents = GraphUtilities.getUpstream(colocateOp, graph);
+        Set<JsonObject> parents = GraphUtilities.getUpstream(JSON4JUtilities.gson(colocateOp), JSON4JUtilities.gson(graph));
         if (!parents.isEmpty()) {
-            JSONObject isolate = parents.get(0);
-            String kind = (String) isolate.get("kind");
+            JsonObject isolate = parents.iterator().next();
+            String kind = jstring(isolate, "kind");
             if (!ISOLATE.kind().equals(kind))
                 return;
-            parents = GraphUtilities.getUpstream(isolate, graph);
+            parents = GraphUtilities.getUpstream(isolate, JSON4JUtilities.gson(graph));
             if (parents.isEmpty())
                 return;
-            JSONObject isolateParentOp = parents.get(0);
+            JsonObject isolateParentOp = parents.iterator().next();
             for (Placeable<?> placeable : toFuse) {
                 JSONObject tgtOp = placeable.operator().complete();
-                if (tgtOp == isolateParentOp)
+                if (tgtOp.get("name").equals(jstring(isolateParentOp, "name")))
                     throw new IllegalStateException("Illegal to colocate an isolated stream with its parent.");
             }
         }
@@ -174,14 +178,14 @@ class PlacementInfo {
      * Update an element's placement configuration.
      */
     private void updatePlacementJSON(Placeable<?> element) {
-        JSONObject placement = JOperatorConfig.createJSONItem(element.operator().json(), JOperatorConfig.PLACEMENT);
-        placement.put(JOperator.PLACEMENT_EXPLICIT_COLOCATE_ID, fusingIds.get(element));
+        JSONObject placement = JOperatorConfig.createJSONItem(element.operator().json(), PLACEMENT);
+        placement.put(PLACEMENT_EXPLICIT_COLOCATE_ID, fusingIds.get(element));
         
         Set<String> elementResourceTags = resourceTags.get(element);
         if (elementResourceTags != null && !elementResourceTags.isEmpty()) {
             JSONArray listOfTags = new JSONArray();
             listOfTags.addAll(elementResourceTags);    
-            placement.put(JOperator.PLACEMENT_RESOURCE_TAGS, listOfTags);    
+            placement.put(PLACEMENT_RESOURCE_TAGS, listOfTags);    
         } 
     }
 }

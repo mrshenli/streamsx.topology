@@ -1,5 +1,6 @@
 # Licensed Materials - Property of IBM
 # Copyright IBM Corp. 2016
+from __future__ import print_function
 import sys
 from streamsx.topology.topology import Topology
 import streamsx.topology.context
@@ -26,19 +27,19 @@ def main():
     """
     
     topo = Topology("filter_echo")
-    source = topo.source(filter_echo_functions.SysArgv(sys.argv[1:]))
+    source = topo.source(sys.argv[1:])
     
     # Declare a stream that will execute functional logic
     # against tuples on the echo stream.
-    # For each tuple that will appear on echo, the below
-    # `starts_with_d` method will be called.  If it returns
-    # True then the tuple will appear on the filtered
+    # For each tuple that will appear on echo, the
+    # lambda function will be called, passing the tuple.
+    # If it returns True then the tuple will appear on the filtered
     # stream, otherwise the tuple is discarded.
-    filtered = source.filter(filter_echo_functions.starts_with_d)
+    filtered = source.filter(lambda tuple : tuple.startswith("d"))
     
     filtered.print()
     
-    streamsx.topology.context.submit("STANDALONE", topo.graph)
+    streamsx.topology.context.submit("STANDALONE", topo)
      
 if __name__ == '__main__':
     main()

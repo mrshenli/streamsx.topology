@@ -13,6 +13,13 @@
   <path id="compile.classpath">
     <path refid="streams.classpath"/>
     <path refid="tk.classpath"/>
+    <pathelement location="${junit.jar}"/>
+  </path>
+
+  <path id="compile.pure.classpath">
+    <path refid="gson.classpath" />
+    <path refid="httpclient.classpath"/>
+    <path refid="compress.classpath"/>
   </path>
 
   <target name="all" depends="jar"/>
@@ -23,16 +30,40 @@
     <mkdir dir="${tk.lib}"/>
   </target>
 
-  <target name="compile" depends="init">
+  <!-- Compile of classes that do not depend on STREAMS_INSTALL
+       to allow local generation of SPL code and submission to
+       a build farm.
+   -->
+  <property name="cisxt" value="com/ibm/streamsx/topology"/>
+  <target name="compile.pure" depends="init">
     <javac debug="true" includeantruntime="no"
-	   srcdir="${src}" 
-	   destdir="${classes}"
-	   classpathref="compile.classpath"/>
+       srcdir="${src}" 
+       destdir="${classes}"
+       classpathref="compile.pure.classpath"
+       includes="${cisxt}/function/*.java
+                 ${cisxt}/internal/gson/*.java
+                 ${cisxt}/generator/**
+                 ${cisxt}/context/remote/*.java
+                 ${cisxt}/internal/context/remote/*.java
+                 ${cisxt}/internal/streaminganalytics/*.java
+                 "
+    />
+    <copy toDir="${classes}">
+      <fileset dir="${src}" includes="**/*.properties"/>
+    </copy>
+  </target>
+
+  <target name="compile" depends="init,compile.pure">
+    <javac debug="true" includeantruntime="no"
+       srcdir="${src}" 
+       destdir="${classes}"
+       classpathref="compile.classpath"/>
     <ant dir="../scala" target="all" useNativeBasedir="true" inheritAll="no"/>
   </target>
 
+  <target name="jar" depends="compile,_jar"/>
 
-  <target name="jar" depends="compile">
+  <target name="_jar">
   <manifestclasspath property="jar.classpath" jarfile="${jar}">
      <classpath>
        <path refid="tk.classpath"/>
@@ -46,9 +77,8 @@
           <attribute name="Class-Path" value="${jar.classpath}"/>
        </manifest>
     <fileset dir="${classes}"/>
-    <fileset dir="${src}"
-       excludes="com/ibm/streamsx/topology/internal/**"
-       />
+    <fileset dir="${src}" excludes="com/ibm/streamsx/topology/internal/**"/>
+    <fileset dir="${src}" includes="com/ibm/streamsx/topology/internal/messages/*.properties"/>
     </jar>
   </target>
 

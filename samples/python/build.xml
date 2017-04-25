@@ -8,11 +8,12 @@
   <property name="streams.install" value="${env.STREAMS_INSTALL}"/>
   <property name="tk" location="../../com.ibm.streamsx.topology"/>
   <property name="pytk" location="com.ibm.streamsx.topology.pysamples"/>
+  <property name="pythonversion" value="python3"/>
 
   <target name="all" depends="spldoc,extract"/>
 
   <target name="extract">
-   <exec executable="python3">
+   <exec executable="${pythonversion}">
      <arg value="${tk}/bin/spl-python-extract.py"/>
      <arg value="-i"/>
      <arg value="${pytk}"/>
@@ -36,13 +37,15 @@
   <target name="clean" >
     <delete dir="${pytk}/output"/>
     <delete dir="${pytk}/doc"/>
+    <delete dir="${pytk}/impl"/>
     <delete dir="${pytk}/opt/.__splpy"/>
     <delete file="${pytk}/toolkit.xml"/>
     <delete includeemptydirs="true" >
        <fileset dir="${pytk}">
+          <include name="com.ibm.streamsx.topology.pysamples.kwargs/**"/>
           <include name="com.ibm.streamsx.topology.pysamples.mail/**"/>
           <include name="com.ibm.streamsx.topology.pysamples.positional/**"/>
-          <include name="opt/.__splpy/**"/>
+          <include name="com.ibm.streamsx.topology.pysamples.sources/**"/>
           <exclude name="**/namespace-info.spl"/>
        </fileset>
     </delete>
