@@ -40,7 +40,6 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
-import com.ibm.streamsx.topology.TStream.Routing;
 import com.ibm.streamsx.topology.builder.BVirtualMarker;
 import com.ibm.streamsx.topology.builder.JParamTypes;
 import com.ibm.streamsx.topology.generator.operator.OpProperties;
@@ -271,6 +270,10 @@ public class SPLGenerator {
         for(JsonObject obj : startsEndsAndOperators.get(0))
             if(obj.has("config") && (hasAny(object(obj, "config"), compOperatorStarts)))
                 operators.add(obj);
+        
+        if(operators.size() == 0){
+            throw new IllegalStateException("A region must contain at least one operator.");
+        }
             
         compositeDefinition.add("operators", operators);
         
@@ -349,7 +352,7 @@ public class SPLGenerator {
                 parallelInfo.add(OpProperties.WIDTH, outputPort.get(OpProperties.WIDTH));
             
             
-            if(jstring(outputPort, PortProperties.ROUTING).equals(Routing.BROADCAST.toString())){
+            if(jstring(outputPort, PortProperties.ROUTING).equals("BROADCAST")){
                 broadcastPorts.add(inputPort.get("name"));
             }
             
@@ -482,12 +485,6 @@ public class SPLGenerator {
             unvisited.addAll(children);
 
         }
-        
-        // IE, a parallel region can't just be .parallel().endparallel()
-        if(potOperators.size() == 0){
-            throw new IllegalStateException("A region must contain at least one operator.");
-        }
-       
         
         List<List<JsonObject> > startsStopsAndOperators = new ArrayList<>();
         startsStopsAndOperators.add(potStarts);
